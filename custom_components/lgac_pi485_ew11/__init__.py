@@ -6,6 +6,8 @@ from homeassistant.components.climate.const import HVACMode, FAN_MEDIUM, FAN_LOW
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+# 에어컨(climate)과 각종 센서(sensor)를 동시에 로드하도록 지정
 PLATFORMS = ["climate", "sensor"]
 
 class LGDeviceState:
@@ -17,14 +19,14 @@ class LGDeviceState:
         self.temp_step = temp_step
         self.has_heat = has_heat
         
-        # 🌟 기본 제어 상태
+        # 기본 제어 상태
         self.is_on = False
         self.hvac_mode = HVACMode.OFF
         self.fan_mode = FAN_MEDIUM
         self.current_temp = 24.0
         self.target_temp = 24.0
         
-        # 🌟 esphome-lgap 전체 고급 센서 데이터 리스트 [protocol.md 기반]
+        # esphome-lgap 전체 고급 센서 데이터 리스트 [protocol.md 기반]
         self.error_code = 0          # RX5
         self.swing_state = False     # RX6 bit3 (Auto Swing)
         self.pipe_in = 0.0           # RX9 (Pipe In Temp)
@@ -94,13 +96,15 @@ class LGDeviceState:
         except Exception as e:
             _LOGGER.error(f"고급 패킷 분석 오류: {e}")
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
+    
     host = entry.data["host"]
     port = entry.data["port"]
     mapping_str = entry.data["mapping"]
     temp_step = entry.data.get("temp_step", 1.0)
-    has_heat = entry.data.get("has_heat", True) # 🌟 난방 여부 로드
+    has_heat = entry.data.get("has_heat", True)
 
     devices = {}
     for item in mapping_str.split(","):
@@ -110,11 +114,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             real_id = int(rest.split("/")[0].strip(), 16)
             name = rest.split("/")[1].strip() if "/" in rest else f"에어컨 {entity_val}"
             
+            # 실내기 번호를 기준으로 중앙 데이터 객체 생성
             devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat)
 
-    hass.data[DOMAIN][entry.entry_id] = {"devices": devices, "writer": None}
+    hass.data[DOMAIN][entry.entry_id] = {
+        "devices": devices,
+        "writer": None
+    }
+
+    # 🌟 [수정 포인트] 아래 정의된 함수명인 ew11_socket_task와 정확히 매칭하여 태스크 실행
     hass.loop.create_task(ew11_socket_task(hass, entry, host, port))
+    
+    # climate.py와 sensor.py를 한 번에 실행
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
-# ... (ew11_socket_task 및 async_unload_entry 로직은 이전과 동일하게 유지) ...
+
+async def ew11_socket_task(hass: HomeAssistant, entry: ConfigEntry, host: str, port: int):
+    """EW11 스트림 소켓 감시 및 중앙 장치 분배 핸들러"""
+    while True:
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            hass.data[DOMAIN][entry.entry_id]["writer"] = writer
+            _LOGGER.info(f"Connected to EW11 Stream Handler ({host}:{port})")
+
+            buffer = bytearray()
+            while True:
+                data = await reader.read(1024)
+                if not data: break
+                buffer.extend(data)
+
+                while len(buffer) >= 8:
+                    if buffer[0] == 0x80 or buffer[0] == 0x10:
+                        room_idx = 3 if buffer[0] == 0x80 else 4
+                        packet_len = 8 if buffer[0] == 0x80 else 16
+                        
+                        if len(buffer) >= packet_len:
+                            # 수신된 패킷이 0x10(상태 응답)일 경우 해당 기기 객체에 파싱 지시
+                            if buffer[0] == 0x10:
+                                real_id = buffer[room_idx]
+                                devices = hass.data[DOMAIN][entry.entry_id]["devices"]
+                                if real_id in devices:
+                                    devices[real_id].update_from_packet(bytes(buffer[:16]))
+                            
+                            del buffer[:packet_len]
+                        else:
+                            break
+                    else:
+                        del buffer[0:1]
+        except Exception as e:
+            _LOGGER.error(f"EW11 TCP 소켓 연결 끊어짐 세션 재시도 (10초 대기): {e}")
+            await asyncio.sleep(10)
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id)
+    return unload_ok
