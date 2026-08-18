@@ -6,24 +6,15 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """esphome-lgap의 모든 하드웨어 모니터링 센서를 한 번에 생성"""
     entry_data = hass.data[DOMAIN][entry.entry_id]
-    devices = entry_data["devices"]
-
     entities = []
-    for device in devices.values():
-        # 1. 온/오프 상태 플래그 센서
-        entities.append(LGACSensor(device, "pipe_in", "액관 온도 (Pipe In)", UnitOfTemperature.CELSIUS, "mdi:pipe"))
-        entities.append(LGACSensor(device, "pipe_out", "가스관 온도 (Pipe Out)", UnitOfTemperature.CELSIUS, "mdi:pipe"))
-        
-        # 2. 시스템 에러 진단 코드 센서
-        entities.append(LGACSensor(device, "error_code", "에러 코드 (Error)", None, "mdi:alert-circle"))
-        
-        # 3. LonWorks 연동 지표 - 컴프레서 및 기기 효율 부하 센서 전체 복원
-        entities.append(LGACSensor(device, "zone_active_load", "실내기 가동 부하 지수", None, "mdi:chart-bell-curve"))
-        entities.append(LGACSensor(device, "zone_power_state_flag", "컴프레서 유휴 상태 플래그", None, "mdi:power-setting"))
-        entities.append(LGACSensor(device, "zone_design_load_index", "정격 설계 용량 가중치", None, "mdi:weight"))
-        entities.append(LGACSensor(device, "odu_total_load", "실외기 총 열부하 지수 (ODU Total Load)", None, "mdi:speedometer"))
+    for device in entry_data["devices"].values():
+        entities.append(LGACSensor(device, "pipe_in", "액관 온도", UnitOfTemperature.CELSIUS, "mdi:pipe"))
+        entities.append(LGACSensor(device, "pipe_out", "가스관 온도", UnitOfTemperature.CELSIUS, "mdi:pipe"))
+        entities.append(LGACSensor(device, "error_code", "에러 코드", None, "mdi:alert-circle"))
+        entities.append(LGACSensor(device, "odu_total_load", "실외기 총 부하", None, "mdi:speedometer"))
+        # 🌟 요청하신 실시간 무선 패킷 모니터링 센서 추가
+        entities.append(LGACSensor(device, "raw_packet", "현재 에어컨 패킷", None, "mdi:network-packet"))
     
     async_add_entities(entities)
     return True
@@ -33,11 +24,14 @@ class LGACSensor(SensorEntity):
         self.device = device
         self.sensor_type = sensor_type
         
-        # 고정 엔티티 ID 규격 생성 (예: sensor.lgac_01_odu_total_load)
         self.entity_id = f"sensor.lgac_{device.entity_idx.lower()}_{sensor_type}"
         self._attr_unique_id = f"lgac_sensor_{device.entity_idx.lower()}_{sensor_type}"
         self._attr_name = f"{device.name} {name_suffix}"
         
+        # 🌟 기기 분리를 위해 climate와 동일한 디바이스 인포 바인딩
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"lgac_device_{device.real_id}")},
+        }
         self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
 
@@ -46,12 +40,9 @@ class LGACSensor(SensorEntity):
 
     @property
     def native_value(self):
-        """중앙 데이터 상태 허브 객체에서 자신의 변수 추출"""
         if self.sensor_type == "pipe_in": return self.device.pipe_in
         if self.sensor_type == "pipe_out": return self.device.pipe_out
         if self.sensor_type == "error_code": return self.device.error_code
-        if self.sensor_type == "zone_active_load": return self.device.zone_active_load
-        if self.sensor_type == "zone_power_state_flag": return self.device.zone_power_state_flag
-        if self.sensor_type == "zone_design_load_index": return self.device.zone_design_load
         if self.sensor_type == "odu_total_load": return self.device.odu_total_load
+        if self.sensor_type == "raw_packet": return self.device.raw_packet # 🌟 헥사 데이터 출력
         return None
