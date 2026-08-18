@@ -16,7 +16,7 @@ class LGDeviceState:
         self.temp_step = temp_step
         self.has_heat = has_heat
         self.has_plasma = has_plasma
-        self.system_type = system_type # 'M' 또는 'S'
+        self.system_type = system_type 
         
         self.is_on = False
         self.hvac_mode = HVACMode.OFF
@@ -61,17 +61,13 @@ class LGDeviceState:
             self.swing_state = bool(packet[6] & 0x08)
             fan_raw = (packet[6] >> 4) & 0x07
             
-            # 🌟 [핵심 로직] 시스템 타입에 따른 온도 계산 공식 분리
             if self.system_type == "M":
-                # 다배관 (Multi-V, 시스템 에어컨)
                 self.target_temp = float((packet[7] & 0x0F) + 15)
                 self.current_temp = float(packet[8] - 15)
             else:
-                # 단배관 (가정용 2in1 등) - 비트 마스킹 보정 적용
                 self.target_temp = float((packet[7] & 0x1F) + 15)
                 self.current_temp = float((packet[8] & 0x7F) - 15)
             
-            # 🌟 배관 온도는 기존 공식 그대로 유지 (192 - val) / 3.0
             self.pipe_in = float((192 - packet[9]) / 3.0)
             self.pipe_out = float((192 - packet[10]) / 3.0)
             
@@ -124,8 +120,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             name = parts[1].strip() if len(parts) > 1 else f"에어컨 {entity_val}"
             has_heat = parts[2].strip() == "1" if len(parts) > 2 else True
             has_plasma = parts[3].strip() == "1" if len(parts) > 3 else False
-            
-            # 매핑 데이터에서 M 또는 S 추출 (기본값 다배관 M)
             sys_type = parts[4].strip() if len(parts) > 4 else "M"
             
             devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat, has_plasma, sys_type)
@@ -159,22 +153,27 @@ async def ew11_socket_task(hass, entry, host, port):
             hass.data[DOMAIN][entry.entry_id]["writer"] = writer
             buffer = bytearray()
             while True:
-                data = await reader.read(1024)
+                # 🌟 [소켓 방어 로직] 60초간 핑조차 없으면 소켓을 끊고 재연결 유도
+                data = await asyncio.wait_for(reader.read(1024), timeout=60.0)
                 if not data: break
                 buffer.extend(data)
+                
                 while len(buffer) >= 8:
-                    if buffer[0] in [0x80, 0x10]:
-                        room_idx = 3 
-                        packet_len = 8 if buffer[0] == 0x80 else 16
+                    # 🌟 [프레임 버그 수정] 0x00을 인식하게 하여 데이터 밀림(Corrupt) 현상 완벽 차단!
+                    if buffer[0] in [0x00, 0x80, 0x10]:
+                        packet_len = 16 if buffer[0] == 0x10 else 8
                         if len(buffer) >= packet_len:
                             if buffer[0] == 0x10:
-                                real_id = buffer[room_idx]
+                                real_id = buffer[3] # 기기 번호
                                 devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-                                if real_id in devices: devices[real_id].update_from_packet(bytes(buffer[:16]))
+                                if real_id in devices: 
+                                    devices[real_id].update_from_packet(bytes(buffer[:16]))
                             del buffer[:packet_len]
                         else: break
-                    else: del buffer[0:1]
-        except Exception:
+                    else: 
+                        del buffer[0:1] # 쓰레기값이면 1바이트씩 버리면서 헤더 탐색
+        except Exception as e:
+            _LOGGER.error(f"통신 에러 혹은 무응답 타임아웃, 재연결 시도 중... : {e}")
             await asyncio.sleep(5)
 
 async def async_unload_entry(hass, entry):
