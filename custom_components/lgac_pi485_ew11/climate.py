@@ -13,91 +13,82 @@ from .const import DOMAIN, make_control_packet
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """플랫폼 초기화 시 콜백 함수 바인딩 (자동 감지 리스너가 호출할 함수)"""
-    hass.data[DOMAIN][entry.entry_id]["async_add_entities_fn"] = async_add_entities
+    """치환 맵 구조를 순회하며 요청된 고정 ID 포맷대로 엔티티 일괄 등록"""
+    entry_data = hass.data[DOMAIN][entry.entry_id]
+    writer = entry_data["writer"]
+    mapping_dict = entry_data["mapping"]
+    piping_type = entry_data["piping_type"]
+
+    entities = []
+    # entity_suffix: 생성할 주소 이름 ("00", "01" 등)
+    # real_room_id: 실제 통신 버스 라인에서의 주소값 (1, 2 등)
+    for entity_suffix, real_room_id in mapping_dict.items():
+        entities.append(LGAirConditionerEntity(writer, entity_suffix, real_room_id, piping_type))
+    
+    async_add_entities(entities)
     return True
 
 
 class LGAirConditionerEntity(ClimateEntity):
-    """LG 에어컨 개별 실내기 엔티티"""
+    """치환 매핑 및 단/다배관 설정이 통합된 실내기 엔티티"""
     
-    def __init__(self, writer, room_id: int):
+    def __init__(self, writer, entity_suffix: str, real_room_id: int, piping_type: str):
         self._writer = writer
-        self._room_id = room_id
+        self._real_room_id = real_room_id
+        self._piping_type = piping_type
         
-        # 16진수 2자리 소문자 포맷팅 (0 -> 00, 1 -> 01, 10 -> 0a ...)
-        room_hex_str = f"{room_id:02x}"
+        # 🌟 사용자가 요구한 대시보드 호환용 고정 엔티티 ID 강제 부여 ("00", "01" 등)
+        self.entity_id = f"climate.lgac_{entity_suffix.lower()}_cm"
+        self._attr_unique_id = f"lgac_{entity_suffix.lower()}_cm"
+        self._attr_name = f"LG AirCon {entity_suffix.upper()}"
         
-        # 🌟 사용자가 요청한 엔티티 ID 포맷 (climate.lgac_xx_cm) 고정
-        self.entity_id = f"climate.lgac_{room_hex_str}_cm"
-        
-        # 기기 고유 ID 및 UI 표시 이름 설정
-        self._attr_unique_id = f"lgac_{room_hex_str}_cm"
-        self._attr_name = f"LG AirCon {room_hex_str.upper()}"
-        
-        # 기능 및 지원 모드 설정
         self._attr_temperature_unit = UnitOfTemperature.CELSIUS
         self._attr_supported_features = (
             ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE
         )
         self._attr_hvac_modes = [
-            HVACMode.OFF,
-            HVACMode.COOL,
-            HVACMode.FAN_ONLY,
-            HVACMode.DRY,
-            HVACMode.HEAT,
-            HVACMode.AUTO,
+            HVACMode.OFF, HVACMode.COOL, HVACMode.FAN_ONLY, 
+            HVACMode.DRY, HVACMode.HEAT, HVACMode.AUTO
         ]
         self._attr_fan_modes = [FAN_LOW, FAN_MEDIUM, FAN_HIGH]
         
-        # 기본 상태값 초기화 (향후 수신 패킷 파싱 시 이 값들을 업데이트해야 함)
+        # 상태값 기본값 설정
         self._attr_hvac_mode = HVACMode.OFF
         self._attr_target_temperature = 24.0
         self._attr_current_temperature = 26.0
         self._attr_fan_mode = FAN_MEDIUM
 
-
     async def async_set_hvac_mode(self, hvac_mode):
-        """HVAC(냉난방) 모드 변경 시 호출"""
         self._attr_hvac_mode = hvac_mode
-        
-        # TODO: 엑셀 시트 규칙에 맞게 모드 헥사값 정밀 매핑 필요
-        # (임시 예시: COOL은 0x48, 나머지는 0x02)
         mode_hex = 0x48 if hvac_mode == HVACMode.COOL else 0x02
-        
         await self._send_control(mode_hex, int(self._attr_target_temperature))
         self.async_write_ha_state()
 
-
     async def async_set_temperature(self, **kwargs):
-        """설정 온도 변경 시 호출"""
         if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
             self._attr_target_temperature = target_temp
-            
             mode_hex = 0x48 if self._attr_hvac_mode == HVACMode.COOL else 0x02
             await self._send_control(mode_hex, int(target_temp))
             self.async_write_ha_state()
 
-
-    async def async_set_fan_mode(self, fan_mode):
-        """풍속 변경 시 호출"""
-        self._attr_fan_mode = fan_mode
-        
-        # TODO: 풍속(fan_mode)에 따른 제어 패킷 생성 로직 추가 필요
-        # mode_hex = ... 
-        # await self._send_control(mode_hex, int(self._attr_target_temperature))
-        
-        self.async_write_ha_state()
-
-
     async def _send_control(self, mode_hex: int, temp: int):
-        """EW11 소켓으로 최종 조합된 패킷 전송"""
-        packet = make_control_packet(self._room_id, mode_hex, temp)
+        # 🌟 제어 패킷 생성 시 '기존 명칭'이 아닌 '치환된 실제 하드웨어 주소'(_real_room_id) 사용
+        packet = make_control_packet(self._real_room_id, mode_hex, temp)
         
         if self._writer:
             try:
                 self._writer.write(packet)
                 await self._writer.drain()
-                _LOGGER.debug(f"[Room {self._room_id:02x}] Sent packet: {packet.hex()}")
+                _LOGGER.debug(f"[{self.entity_id}] Sent to real ID {self._real_room_id:02X}: {packet.hex()}")
             except Exception as e:
-                _LOGGER.error(f"[Room {self._room_id:02x}] Packet send failed: {e}")
+                _LOGGER.error(f"[{self.entity_id}] Communication failure: {e}")
+
+    def update_status_from_packet(self, packet_bytes: bytes):
+        """(향후 확장용) 외부 수신 리스너로부터 전달받은 버스 패킷 동기화 로직"""
+        # 단배관/다배관 유형별 수신 인덱스 차이 예외 처리 구문 뼈대
+        if self._piping_type == "multi":
+            # 다배관 파싱 로직: pipe1, pipe2 인덱스를 모두 조회하여 온도 추출 
+            pass
+        else:
+            # 단배관 파싱 로직: pipe2 인덱스 생략 및 예외 바이패스 [cite: 178, 233]
+            pass
