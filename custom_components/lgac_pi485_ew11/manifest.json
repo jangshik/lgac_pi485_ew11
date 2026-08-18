@@ -1,10 +1,10 @@
 {
   "domain": "lgac_pi485_ew11",
-  "name": "LG AC PI485 EW11 Local Control",
-  "documentation": "https://github.com/jangshik/lgac_pi485_ew11",
+  "name": "LG AC PI485 EW11 (esphome-lgap ported)",
+  "documentation": "https://github.com/your-repo/lgac_pi485_ew11",
   "dependencies": [],
-  "codeowners": ["@jangshik"],
-  "version": "1.0.0",
+  "codeowners": [],
+  "version": "1.2.0",
   "iot_class": "local_push",
   "config_flow": true
 }
