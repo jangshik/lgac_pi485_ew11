@@ -9,8 +9,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
     entities = []
     for device in devices.values():
-        entities.append(LGACSensor(device, "pipe_in", "액관 온도", UnitOfTemperature.CELSIUS, "mdi:pipe"))
-        entities.append(LGACSensor(device, "pipe_out", "가스관 온도", UnitOfTemperature.CELSIUS, "mdi:pipe"))
+        entities.append(LGACSensor(device, "pipe_in", "배관 입구 온도", UnitOfTemperature.CELSIUS, "mdi:pipe"))
+        entities.append(LGACSensor(device, "pipe_out", "배관 출구 온도", UnitOfTemperature.CELSIUS, "mdi:pipe"))
         entities.append(LGACSensor(device, "error_code", "에러 코드", None, "mdi:alert-circle"))
         entities.append(LGACSensor(device, "zone_active_load", "실내기 가동 부하", None, "mdi:chart-bell-curve"))
         entities.append(LGACSensor(device, "zone_power_state_flag", "컴프레서 플래그", None, "mdi:power-setting"))
