@@ -155,13 +155,15 @@ async def ew11_socket_task(hass, entry, host, port):
                 buffer.extend(data)
                 while len(buffer) >= 8:
                     if buffer[0] in [0x80, 0x10]:
-                        room_idx = 3 if buffer[0] == 0x80 else 4
+                        # 🌟 [치명적 버그 수정] 실시간 리스너에서도 기기 주소 인덱스를 3으로 고정!
+                        room_idx = 3 
                         packet_len = 8 if buffer[0] == 0x80 else 16
                         if len(buffer) >= packet_len:
                             if buffer[0] == 0x10:
                                 real_id = buffer[room_idx]
                                 devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-                                if real_id in devices: devices[real_id].update_from_packet(bytes(buffer[:16]))
+                                if real_id in devices: 
+                                    devices[real_id].update_from_packet(bytes(buffer[:16]))
                             del buffer[:packet_len]
                         else: break
                     else: del buffer[0:1]

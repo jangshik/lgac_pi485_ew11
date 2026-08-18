@@ -25,7 +25,8 @@ async def async_sniff_rs485(host, port, scan_duration=5.0):
                     buffer.extend(data)
                     while len(buffer) >= 8:
                         if buffer[0] in [0x80, 0x10]:
-                            room_idx = 3 if buffer[0] == 0x80 else 4
+                            # 🌟 [치명적 버그 수정] 어떤 패킷이든 기기 주소는 무조건 4번째 바이트(index 3)입니다!
+                            room_idx = 3 
                             packet_len = 8 if buffer[0] == 0x80 else 16
                             if len(buffer) >= packet_len:
                                 discovered.add(buffer[room_idx])
@@ -37,6 +38,7 @@ async def async_sniff_rs485(host, port, scan_duration=5.0):
 
         read_task = asyncio.create_task(read_responses())
 
+        # 0x00 ~ 0x1F 능동 찌르기
         for room_id in range(32):
             try:
                 writer.write(make_scan_poll_packet(room_id))
@@ -121,32 +123,23 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             schema_dict[vol.Required(f"heat_{hw_hex}", default=False)] = bool
             schema_dict[vol.Required(f"plasma_{hw_hex}", default=False)] = bool
             
-        # config_flow.py의 하단 스키마 정의 부분 수정본
         default_manual_value = ""
         if not self.discovered_ids:
-            # 스캔 실패 시 아예 입력칸 내부에 직접 예시 텍스트가 박혀있도록 수정
-            default_manual_value = "01:01/거실 에어컨/0/1, 02:02/안방 에어컨/1/0"
+            default_manual_value = "01:01/거실 에어컨/0/1, 02:02/안방 에어컨/0/1"
 
-        # vol.Optional에 명시적인 주석과 기본 안내 폼 바인딩
-        schema_dict[vol.Optional(
-            "manual_mapping", 
-            default=default_manual_value
-        )] = str
+        schema_dict[vol.Optional("manual_mapping", default=default_manual_value)] = str
 
         if self.discovered_ids:
-            desc = f"🎉 **능동 스캔 성공!** 총 {len(self.discovered_ids)}대의 에어컨 실내기가 자동 식별되었습니다.\n\n"
-            desc += "추가로 수동 등록할 기기가 없다면 맨 아래 '수동 매핑 지정' 칸을 비워두고 제출하시면 됩니다."
+            desc = f"🎉 **능동 스캔 성공!** 총 {len(self.discovered_ids)}대의 에어컨 실내기가 감지되었습니다.\n\n"
+            desc += "누락된 기기가 있다면 맨 아래 '수동 매핑 지정' 칸에 누락된 기기만 적어주세요. (예: `02:02/안방/0/1`)"
         else:
             desc = "⚠️ **안내: 능동 스캔 시간 동안 응답한 에어컨이 없습니다.**\n"
-            desc += "에어컨이 완전히 차단되어 있거나 통신 대기 중일 수 있습니다. 아래 입력창에 예시가 미리 채워져 있으니 숫자와 명칭만 수정하여 등록해 주세요.\n\n"
+            desc += "아래 입력창에 예시가 채워져 있으니 숫자와 명칭만 수정하여 등록해 주세요.\n\n"
             
-        desc += "--- \n"
+        desc += "\n--- \n"
         desc += "**[✍️ 수동 매핑 입력 형식 규칙]**\n"
-        desc += "`엔티티번호:통신주소/기기이름/난방유무(1또는0)/플라즈마유무(1또는0)`\n\n"
-        desc += "**[💡 입력 값 상세 예시]**\n"
-        desc += "- `01:01/거실 에어컨/0/1` ➡️ HA에는 `01`로 생성 / 실제주소는 `01` / 난방 없음(0) / 플라즈마 청정 있음(1)\n"
-        desc += "- `02:02/안방 에어컨/1/0` ➡️ HA에는 `02`로 생성 / 실제주소는 `02` / 난방 있음(1) / 플라즈마 청정 없음(0)\n\n"
-        desc += "여러 대를 한 번에 등록하실 때는 반드시 **쉼표(,)**로 구분해서 이어서 적어주세요!"
+        desc += "`엔티티번호:통신주소/기기이름/난방유무(1또는0)/플라즈마유무(1또는0)`\n"
+        desc += "(여러 대를 한 번에 등록할 때는 쉼표(,)로 구분)"
 
         return self.async_show_form(
             step_id="mapping", 
