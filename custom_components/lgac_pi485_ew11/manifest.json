@@ -1,0 +1,9 @@
+{
+  "domain": "lgac_pi485_ew11",
+  "name": "LG AC PI485 EW11 Local Control",
+  "documentation": "https://github.com/jangshik/lgac_pi485_ew11",
+  "dependencies": [],
+  "codeowners": ["@jangshik"],
+  "version": "1.0.0",
+  "iot_class": "local_push"
+}
