@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "LG 시스템 에어컨 (EW11) 연결",
+        "description": "EW11 기기의 소켓 정보와 실내기 번호를 입력해주세요.",
+        "data": {
+          "host": "EW11 IP 주소",
+          "port": "포트 번호",
+          "room_id": "실내기 번호 (예: 0, 1, 2...)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "EW11에 연결할 수 없습니다. IP와 포트를 확인해주세요."
+    },
+    "abort": {
+      "already_configured": "이 실내기는 이미 구성되어 있습니다."
+    }
+  }
+}
