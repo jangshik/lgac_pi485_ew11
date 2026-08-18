@@ -25,7 +25,6 @@ async def async_sniff_rs485(host, port, scan_duration=5.0):
                     buffer.extend(data)
                     while len(buffer) >= 8:
                         if buffer[0] in [0x80, 0x10]:
-                            # 🌟 [치명적 버그 수정] 어떤 패킷이든 기기 주소는 무조건 4번째 바이트(index 3)입니다!
                             room_idx = 3 
                             packet_len = 8 if buffer[0] == 0x80 else 16
                             if len(buffer) >= packet_len:
@@ -38,7 +37,6 @@ async def async_sniff_rs485(host, port, scan_duration=5.0):
 
         read_task = asyncio.create_task(read_responses())
 
-        # 0x00 ~ 0x1F 능동 찌르기
         for room_id in range(32):
             try:
                 writer.write(make_scan_poll_packet(room_id))
@@ -47,7 +45,6 @@ async def async_sniff_rs485(host, port, scan_duration=5.0):
             except Exception: break
 
         await asyncio.sleep(max(0.5, scan_duration - 1.6))
-
         read_task.cancel()
         writer.close()
         await writer.wait_closed()
@@ -96,8 +93,9 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 name_val = user_input.get(f"name_{hw_hex}", f"에어컨 {entity_val}")
                 heat_val = "1" if user_input.get(f"heat_{hw_hex}", False) else "0"
                 plasma_val = "1" if user_input.get(f"plasma_{hw_hex}", False) else "0"
+                sys_type = user_input.get(f"type_{hw_hex}", "M")
                 
-                mapping_parts.append(f"{entity_val}:{hw_hex}/{name_val}/{heat_val}/{plasma_val}")
+                mapping_parts.append(f"{entity_val}:{hw_hex}/{name_val}/{heat_val}/{plasma_val}/{sys_type}")
 
             manual_mapping = user_input.get("manual_mapping", "").strip()
             if manual_mapping:
@@ -120,25 +118,32 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             default_entity = f"{room_id + 1:02x}"
             schema_dict[vol.Required(f"entity_{hw_hex}", default=default_entity)] = str
             schema_dict[vol.Required(f"name_{hw_hex}", default=f"에어컨 {default_entity}")] = str
+            schema_dict[vol.Required(f"type_{hw_hex}", default="M")] = vol.In({
+                "M": "다배관 (시스템 에어컨 등)", 
+                "S": "단배관 (가정용 2in1 등)"
+            })
             schema_dict[vol.Required(f"heat_{hw_hex}", default=False)] = bool
             schema_dict[vol.Required(f"plasma_{hw_hex}", default=False)] = bool
             
         default_manual_value = ""
         if not self.discovered_ids:
-            default_manual_value = "01:01/거실 에어컨/0/1, 02:02/안방 에어컨/0/1"
+            # 🌟 수동 매핑 시 난방과 음이온이 모두 0(비활성화)으로 미리 채워지도록 수정
+            default_manual_value = "01:01/거실 에어컨/0/0/M, 02:02/안방 에어컨/0/0/S"
 
         schema_dict[vol.Optional("manual_mapping", default=default_manual_value)] = str
 
         if self.discovered_ids:
             desc = f"🎉 **능동 스캔 성공!** 총 {len(self.discovered_ids)}대의 에어컨 실내기가 감지되었습니다.\n\n"
-            desc += "누락된 기기가 있다면 맨 아래 '수동 매핑 지정' 칸에 누락된 기기만 적어주세요. (예: `02:02/안방/0/1`)"
+            desc += "누락된 기기가 있다면 맨 아래 '수동 매핑 지정' 칸에 누락된 기기만 적어주세요. (예: `02:02/안방/0/0/M`)"
         else:
             desc = "⚠️ **안내: 능동 스캔 시간 동안 응답한 에어컨이 없습니다.**\n"
             desc += "아래 입력창에 예시가 채워져 있으니 숫자와 명칭만 수정하여 등록해 주세요.\n\n"
             
         desc += "\n--- \n"
+        # 🌟 가이드라인 용어를 '플라즈마'에서 '음이온'으로 변경
         desc += "**[✍️ 수동 매핑 입력 형식 규칙]**\n"
-        desc += "`엔티티번호:통신주소/기기이름/난방유무(1또는0)/플라즈마유무(1또는0)`\n"
+        desc += "`엔티티번호:통신주소/기기이름/난방유무(1/0)/음이온유무(1/0)/타입(M/S)`\n"
+        desc += "- 예시: `01:01/거실/0/0/M` (거실에어컨, 난방X, 음이온X, 다배관)\n"
         desc += "(여러 대를 한 번에 등록할 때는 쉼표(,)로 구분)"
 
         return self.async_show_form(

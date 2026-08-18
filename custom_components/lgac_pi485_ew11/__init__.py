@@ -9,13 +9,14 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["climate", "sensor", "switch", "number"]
 
 class LGDeviceState:
-    def __init__(self, entity_idx, real_id, name, temp_step, has_heat, has_plasma):
+    def __init__(self, entity_idx, real_id, name, temp_step, has_heat, has_plasma, system_type):
         self.entity_idx = entity_idx
         self.real_id = real_id
         self.name = name
         self.temp_step = temp_step
         self.has_heat = has_heat
         self.has_plasma = has_plasma
+        self.system_type = system_type # 'M' 또는 'S'
         
         self.is_on = False
         self.hvac_mode = HVACMode.OFF
@@ -33,7 +34,6 @@ class LGDeviceState:
         self.odu_total_load = 0      
         self.raw_packet = "None"
         
-        # 스위치 및 넘버 상태 저장 (esphome-lgap 구현)
         self.child_lock = False      
         self.plasma_ion = False
         self.lock_temp = False
@@ -61,8 +61,17 @@ class LGDeviceState:
             self.swing_state = bool(packet[6] & 0x08)
             fan_raw = (packet[6] >> 4) & 0x07
             
-            self.target_temp = float((packet[7] & 0x0F) + 15)
-            self.current_temp = float((192 - packet[8]) / 3.0)
+            # 🌟 [핵심 로직] 시스템 타입에 따른 온도 계산 공식 분리
+            if self.system_type == "M":
+                # 다배관 (Multi-V, 시스템 에어컨)
+                self.target_temp = float((packet[7] & 0x0F) + 15)
+                self.current_temp = float(packet[8] - 15)
+            else:
+                # 단배관 (가정용 2in1 등) - 비트 마스킹 보정 적용
+                self.target_temp = float((packet[7] & 0x1F) + 15)
+                self.current_temp = float((packet[8] & 0x7F) - 15)
+            
+            # 🌟 배관 온도는 기존 공식 그대로 유지 (192 - val) / 3.0
             self.pipe_in = float((192 - packet[9]) / 3.0)
             self.pipe_out = float((192 - packet[10]) / 3.0)
             
@@ -86,7 +95,6 @@ class LGDeviceState:
                 elif fan_raw == 5: self.fan_mode = "silent"
                 elif fan_raw == 6: self.fan_mode = "turbo"
 
-            # 수면 타이머 카운트다운 로직
             if self.sleep_timer > 0 and self.is_on:
                 self.timer_remaining = max(0, self.timer_remaining - 1)
                 if self.timer_remaining == 0:
@@ -117,12 +125,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             has_heat = parts[2].strip() == "1" if len(parts) > 2 else True
             has_plasma = parts[3].strip() == "1" if len(parts) > 3 else False
             
-            devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat, has_plasma)
+            # 매핑 데이터에서 M 또는 S 추출 (기본값 다배관 M)
+            sys_type = parts[4].strip() if len(parts) > 4 else "M"
+            
+            devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat, has_plasma, sys_type)
         except Exception as e: continue
 
     hass.data[DOMAIN][entry.entry_id] = {"devices": devices, "writer": None}
     
-    # 🌟 수신 태스크와 주기적 업데이트(Polling) 태스크 동시 가동
     hass.loop.create_task(ew11_socket_task(hass, entry, host, port))
     hass.loop.create_task(ew11_poll_task(hass, entry, update_interval))
     
@@ -130,7 +140,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 async def ew11_poll_task(hass, entry, interval):
-    """설정된 주기마다 모든 에어컨에 상태 갱신 요청 패킷(Polling) 전송"""
     while True:
         await asyncio.sleep(interval)
         writer = hass.data[DOMAIN][entry.entry_id].get("writer")
@@ -140,7 +149,7 @@ async def ew11_poll_task(hass, entry, interval):
                 try:
                     writer.write(make_poll_packet(real_id))
                     await writer.drain()
-                    await asyncio.sleep(0.2) # 버스 충돌 방지 지연
+                    await asyncio.sleep(0.2)
                 except: pass
 
 async def ew11_socket_task(hass, entry, host, port):
@@ -155,15 +164,13 @@ async def ew11_socket_task(hass, entry, host, port):
                 buffer.extend(data)
                 while len(buffer) >= 8:
                     if buffer[0] in [0x80, 0x10]:
-                        # 🌟 [치명적 버그 수정] 실시간 리스너에서도 기기 주소 인덱스를 3으로 고정!
                         room_idx = 3 
                         packet_len = 8 if buffer[0] == 0x80 else 16
                         if len(buffer) >= packet_len:
                             if buffer[0] == 0x10:
                                 real_id = buffer[room_idx]
                                 devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-                                if real_id in devices: 
-                                    devices[real_id].update_from_packet(bytes(buffer[:16]))
+                                if real_id in devices: devices[real_id].update_from_packet(bytes(buffer[:16]))
                             del buffer[:packet_len]
                         else: break
                     else: del buffer[0:1]

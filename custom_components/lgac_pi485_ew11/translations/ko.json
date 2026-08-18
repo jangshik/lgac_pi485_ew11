@@ -39,7 +39,7 @@
       "lock_fan": { "name": "풍량 조절 잠금" },
       "lock_mode": { "name": "모드 변경 잠금" },
       "power_only": { "name": "전원 제어만 허용" },
-      "plasma_ion": { "name": "플라즈마 음이온 공기청정" }
+      "plasma_ion": { "name": "음이온" }
     },
     "number": {
       "sleep_timer": { "name": "수면 타이머 설정" }
