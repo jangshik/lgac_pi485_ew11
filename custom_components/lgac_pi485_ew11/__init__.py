@@ -3,7 +3,7 @@ import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.climate.const import HVACMode, FAN_MEDIUM, FAN_LOW, FAN_HIGH
-from .const import DOMAIN, make_poll_packet
+from .const import DOMAIN, make_poll_packet, calculate_checksum
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["climate", "sensor", "switch", "number"]
@@ -52,9 +52,12 @@ class LGDeviceState:
         if len(packet) < 16 or packet[0] != 0x10: return
         try:
             self.raw_packet = packet.hex().upper()
+            
+            # 🌟 [원본 프로토콜 복구] 전원, 잠금, 음이온 플래그는 RX1(인덱스 1)에 있습니다!
             self.is_on = bool(packet[1] & 0x01)
             self.child_lock = bool(packet[1] & 0x04)
             self.plasma_ion = bool(packet[1] & 0x10)
+            
             self.error_code = packet[5]
             
             mode_raw = packet[6] & 0x07
@@ -63,11 +66,10 @@ class LGDeviceState:
             
             if self.system_type == "M":
                 self.target_temp = float((packet[7] & 0x0F) + 15)
-                self.current_temp = float(packet[8] - 15)
             else:
                 self.target_temp = float((packet[7] & 0x1F) + 15)
-                self.current_temp = float((packet[8] & 0x7F) - 15)
             
+            self.current_temp = float((192 - packet[8]) / 3.0)
             self.pipe_in = float((192 - packet[9]) / 3.0)
             self.pipe_out = float((192 - packet[10]) / 3.0)
             
@@ -153,25 +155,35 @@ async def ew11_socket_task(hass, entry, host, port):
             hass.data[DOMAIN][entry.entry_id]["writer"] = writer
             buffer = bytearray()
             while True:
-                # 🌟 [소켓 방어 로직] 60초간 핑조차 없으면 소켓을 끊고 재연결 유도
                 data = await asyncio.wait_for(reader.read(1024), timeout=60.0)
                 if not data: break
                 buffer.extend(data)
                 
                 while len(buffer) >= 8:
-                    # 🌟 [프레임 버그 수정] 0x00을 인식하게 하여 데이터 밀림(Corrupt) 현상 완벽 차단!
+                    # 🌟 [오류 조건 삭제] 어설프게 buffer[1] 조건을 넣었던 부분을 삭제하여, 
+                    # 에어컨이 꺼져 있어도 체크섬만 맞으면 무조건 패킷을 통과시킵니다.
                     if buffer[0] in [0x00, 0x80, 0x10]:
                         packet_len = 16 if buffer[0] == 0x10 else 8
                         if len(buffer) >= packet_len:
-                            if buffer[0] == 0x10:
-                                real_id = buffer[3] # 기기 번호
-                                devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-                                if real_id in devices: 
-                                    devices[real_id].update_from_packet(bytes(buffer[:16]))
-                            del buffer[:packet_len]
-                        else: break
+                            csum = calculate_checksum(buffer[:packet_len-1])
+                            
+                            if buffer[packet_len-1] == csum:
+                                if buffer[0] == 0x10:
+                                    # 🌟 [원본 프로토콜 복구] 기기 주소(Zone Number)는 RX4(인덱스 4)에서 가져옵니다!
+                                    real_id = buffer[4]
+                                    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
+                                    
+                                    if real_id in devices: 
+                                        devices[real_id].update_from_packet(bytes(buffer[:16]))
+                                    else:
+                                        _LOGGER.warning(f"📡 미등록 에어컨 패킷 수신됨! 통신주소: 0x{real_id:02X} ({real_id}번)")
+                                        
+                                del buffer[:packet_len]
+                            else:
+                                del buffer[0:1]
+                        else: break 
                     else: 
-                        del buffer[0:1] # 쓰레기값이면 1바이트씩 버리면서 헤더 탐색
+                        del buffer[0:1] 
         except Exception as e:
             _LOGGER.error(f"통신 에러 혹은 무응답 타임아웃, 재연결 시도 중... : {e}")
             await asyncio.sleep(5)

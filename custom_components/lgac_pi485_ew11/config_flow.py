@@ -7,7 +7,6 @@ from .const import DOMAIN, calculate_checksum
 _LOGGER = logging.getLogger(__name__)
 
 def make_scan_poll_packet(room_id: int) -> bytes:
-    # 🌟 [수정] 0x00 마스터 헤더로 찌르기
     base_packet = bytearray([0x00, 0x00, 0xA0, room_id, 0x00, 0x00, 0x00])
     base_packet.append(calculate_checksum(base_packet))
     return bytes(base_packet)
@@ -24,16 +23,23 @@ async def async_sniff_rs485(host, port, scan_duration=5.0):
                     data = await asyncio.wait_for(reader.read(1024), timeout=0.5)
                     if not data: break
                     buffer.extend(data)
+                    
                     while len(buffer) >= 8:
-                        # 🌟 [수정] 0x00을 포함하여 스캔 시에도 패킷이 꼬이지 않도록 보호
                         if buffer[0] in [0x00, 0x80, 0x10]:
                             packet_len = 16 if buffer[0] == 0x10 else 8
                             if len(buffer) >= packet_len:
-                                if buffer[0] == 0x10:
-                                    discovered.add(buffer[3])
-                                del buffer[:packet_len]
-                            else: break
-                        else: del buffer[0:1]
+                                csum = calculate_checksum(buffer[:packet_len-1])
+                                if buffer[packet_len-1] == csum:
+                                    if buffer[0] == 0x10:
+                                        # 🌟 [완벽 수정] 기기 주소(Zone Number)는 RX4 (인덱스 4) 입니다!
+                                        discovered.add(buffer[4])
+                                    del buffer[:packet_len]
+                                else:
+                                    del buffer[0:1] 
+                            else:
+                                break
+                        else:
+                            del buffer[0:1]
                 except asyncio.TimeoutError: continue
                 except Exception: break
 
@@ -90,7 +96,7 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             mapping_parts = []
             for room_id in self.discovered_ids:
                 hw_hex = f"{room_id:02x}"
-                entity_val = user_input.get(f"entity_{hw_hex}", f"{room_id + 1:02x}")
+                entity_val = user_input.get(f"entity_{hw_hex}", f"{room_id:02x}")
                 name_val = user_input.get(f"name_{hw_hex}", f"에어컨 {entity_val}")
                 heat_val = "1" if user_input.get(f"heat_{hw_hex}", False) else "0"
                 plasma_val = "1" if user_input.get(f"plasma_{hw_hex}", False) else "0"
@@ -116,7 +122,8 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema_dict = {}
         for room_id in self.discovered_ids:
             hw_hex = f"{room_id:02x}"
-            default_entity = f"{room_id + 1:02x}"
+            default_entity = f"{room_id:02x}" 
+            
             schema_dict[vol.Required(f"entity_{hw_hex}", default=default_entity)] = str
             schema_dict[vol.Required(f"name_{hw_hex}", default=f"에어컨 {default_entity}")] = str
             schema_dict[vol.Required(f"type_{hw_hex}", default="M")] = vol.In({
@@ -128,7 +135,7 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
         default_manual_value = ""
         if not self.discovered_ids:
-            default_manual_value = "01:01/거실 에어컨/0/0/M, 02:02/안방 에어컨/0/0/M"
+            default_manual_value = "01:01/거실 에어컨/0/0/M, 02:02/안방 에어컨/0/0/S"
 
         schema_dict[vol.Optional("manual_mapping", default=default_manual_value)] = str
 
