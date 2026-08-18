@@ -2,20 +2,47 @@
   "config": {
     "step": {
       "user": {
-        "title": "LG 시스템 에어컨 (EW11) 연결",
-        "description": "EW11 기기의 소켓 정보와 실내기 번호를 입력해주세요.",
+        "title": "LG 에어컨 게이트웨이 설정",
+        "description": "EW11 게이트웨이의 IP 주소와 포트를 입력하세요.",
         "data": {
-          "host": "EW11 IP 주소",
+          "host": "IP 주소",
           "port": "포트 번호",
-          "room_id": "실내기 번호 (예: 0, 1, 2...)"
+          "temp_step": "온도 조절 단위",
+          "update_interval": "상태 업데이트 주기",
+          "scan_duration": "스캔 대기 시간"
+        }
+      },
+      "mapping": {
+        "title": "에어컨 기기 및 옵션 매핑",
+        "description": "{description}",
+        "data": {
+          "manual_mapping": "수동 매핑 지정"
         }
       }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "pipe_in": { "name": "배관 입구 온도" },
+      "pipe_out": { "name": "배관 출구 온도" },
+      "error_code": { "name": "에러 코드" },
+      "zone_active_load": { "name": "실내기 가동 부하" },
+      "zone_power_state_flag": { "name": "컴프레서 플래그" },
+      "zone_design_load_index": { "name": "정격 용량 가중치" },
+      "odu_total_load": { "name": "실외기 총 열부하" },
+      "timer_remaining": { "name": "남은 수면 타이머" },
+      "raw_packet": { "name": "수신 패킷 스트림" }
     },
-    "error": {
-      "cannot_connect": "EW11에 연결할 수 없습니다. IP와 포트를 확인해주세요."
+    "switch": {
+      "child_lock": { "name": "차일드 락" },
+      "lock_temp": { "name": "온도 조절 잠금" },
+      "lock_fan": { "name": "풍량 조절 잠금" },
+      "lock_mode": { "name": "모드 변경 잠금" },
+      "power_only": { "name": "전원 제어만 허용" },
+      "plasma_ion": { "name": "플라즈마 음이온 공기청정" }
     },
-    "abort": {
-      "already_configured": "이 실내기는 이미 구성되어 있습니다."
+    "number": {
+      "sleep_timer": { "name": "수면 타이머 설정" }
     }
   }
 }

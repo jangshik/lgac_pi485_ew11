@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "LG 에어컨 게이트웨이 설정",
+        "description": "EW11 게이트웨이의 IP 주소와 포트를 입력하세요.",
+        "data": {
+          "host": "IP 주소",
+          "port": "포트 번호",
+          "temp_step": "온도 조절 단위",
+          "update_interval": "상태 업데이트 주기",
+          "scan_duration": "스캔 대기 시간"
+        }
+      },
+      "mapping": {
+        "title": "에어컨 기기 및 옵션 매핑",
+        "description": "{description}",
+        "data": {
+          "manual_mapping": "수동 매핑 지정"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "게이트웨이에 연결할 수 없습니다.",
+      "unknown": "알 수 없는 오류가 발생했습니다."
+    }
+  }
+}

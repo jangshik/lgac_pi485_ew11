@@ -121,11 +121,17 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             schema_dict[vol.Required(f"heat_{hw_hex}", default=False)] = bool
             schema_dict[vol.Required(f"plasma_{hw_hex}", default=False)] = bool
             
+        # config_flow.py의 하단 스키마 정의 부분 수정본
         default_manual_value = ""
         if not self.discovered_ids:
-            default_manual_value = "01:01/거실 에어컨/0/1, 02:02/안방 에어컨/0/1"
+            # 스캔 실패 시 아예 입력칸 내부에 직접 예시 텍스트가 박혀있도록 수정
+            default_manual_value = "01:01/거실 에어컨/0/1, 02:02/안방 에어컨/1/0"
 
-        schema_dict[vol.Optional("manual_mapping", default=default_manual_value)] = str
+        # vol.Optional에 명시적인 주석과 기본 안내 폼 바인딩
+        schema_dict[vol.Optional(
+            "manual_mapping", 
+            default=default_manual_value
+        )] = str
 
         if self.discovered_ids:
             desc = f"🎉 **능동 스캔 성공!** 총 {len(self.discovered_ids)}대의 에어컨 실내기가 자동 식별되었습니다.\n\n"
