@@ -16,7 +16,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities.append(LGACSensor(device, "zone_power_state_flag", "컴프레서 플래그", None, "mdi:power-setting"))
         entities.append(LGACSensor(device, "zone_design_load_index", "정격 용량 가중치", None, "mdi:weight"))
         entities.append(LGACSensor(device, "odu_total_load", "실외기 총 열부하", None, "mdi:speedometer"))
-        entities.append(LGACSensor(device, "timer_remaining", "남은 타이머 시간", "min", "mdi:timer-sand"))
+        entities.append(LGACSensor(device, "timer_remaining", "남은 수면 타이머", "min", "mdi:timer-sand"))
         entities.append(LGACSensor(device, "raw_packet", "수신 패킷", None, "mdi:network-packet"))
     async_add_entities(entities)
     return True
@@ -37,7 +37,6 @@ class LGACSensor(SensorEntity):
 
     @property
     def native_value(self):
-        # 🌟 온도는 소수점 2자리까지만 반환하도록 포맷팅
         if self.sensor_type == "pipe_in": return round(self.device.pipe_in, 2)
         if self.sensor_type == "pipe_out": return round(self.device.pipe_out, 2)
         if self.sensor_type == "error_code": return self.device.error_code

@@ -19,7 +19,6 @@ class LGACSleepTimer(NumberEntity):
         self._attr_device_info = {"identifiers": {(DOMAIN, f"lgac_device_{device.real_id}")}}
         self._attr_icon = "mdi:timer-cog"
         
-        # esphome-lgap 규격 0~420분
         self._attr_native_min_value = 0
         self._attr_native_max_value = 420
         self._attr_native_step = 1
@@ -33,8 +32,5 @@ class LGACSleepTimer(NumberEntity):
         return self.device.sleep_timer
 
     async def async_set_native_value(self, value: float):
-        """타이머 값 설정 및 카운트다운 시작"""
         val = int(value)
-        self.device.sleep_timer = val
-        self.device.timer_remaining = val
-        self.async_write_ha_state()
+        self.device.set_sleep_timer(val)

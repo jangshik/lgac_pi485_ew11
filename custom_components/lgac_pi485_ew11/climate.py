@@ -4,7 +4,7 @@ from homeassistant.components.climate.const import (
     ClimateEntityFeature, HVACMode, FAN_HIGH, FAN_MEDIUM, FAN_LOW, SWING_OFF, SWING_VERTICAL
 )
 from homeassistant.const import UnitOfTemperature
-from .const import DOMAIN, make_control_packet
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +29,6 @@ class LGAirConditionerClimate(ClimateEntity):
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.DRY, HVACMode.FAN_ONLY]
         if device.has_heat: self._attr_hvac_modes.append(HVACMode.HEAT)
             
-        # 🌟 esphome-lgap 요청 풍속 완벽 지원 (silent, turbo 추가)
         self._attr_fan_modes = [FAN_LOW, FAN_MEDIUM, FAN_HIGH, "auto", "silent", "turbo"]
         self._attr_swing_modes = [SWING_OFF, SWING_VERTICAL]
 
@@ -49,42 +48,38 @@ class LGAirConditionerClimate(ClimateEntity):
 
     async def async_set_hvac_mode(self, hvac_mode): 
         if not self.device.lock_mode and not self.device.power_only:
+            # 🌟 [낙관적 업데이트] UI 바운싱을 막기 위해 상태를 먼저 반영
+            self.device.hvac_mode = hvac_mode
+            self.device.is_on = (hvac_mode != HVACMode.OFF)
+            self.async_write_ha_state()
             await self._fire_tx(override_hvac=hvac_mode)
-        elif self.device.power_only and hvac_mode in [HVACMode.OFF, HVACMode.COOL]: # 전원전용
+        elif self.device.power_only and hvac_mode in [HVACMode.OFF, HVACMode.COOL]: 
+            self.device.hvac_mode = hvac_mode
+            self.device.is_on = (hvac_mode != HVACMode.OFF)
+            self.async_write_ha_state()
             await self._fire_tx(override_hvac=hvac_mode)
 
     async def async_set_temperature(self, **kwargs):
         if "temperature" in kwargs and not self.device.lock_temp and not self.device.power_only: 
+            self.device.target_temp = kwargs["temperature"]
+            self.async_write_ha_state()
             await self._fire_tx(override_temp=kwargs["temperature"])
 
     async def async_set_fan_mode(self, fan_mode): 
         if not self.device.lock_fan and not self.device.power_only:
+            self.device.fan_mode = fan_mode
+            self.async_write_ha_state()
             await self._fire_tx(override_fan=fan_mode)
 
     async def async_set_swing_mode(self, swing_mode): 
         if not self.device.power_only:
-            self.device.swing_state = (swing_mode == SWING_VERTICAL)
-            await self._fire_tx()
+            is_swing = (swing_mode == SWING_VERTICAL)
+            self.device.swing_state = is_swing
+            self.async_write_ha_state()
+            await self._fire_tx(override_swing=is_swing)
 
-    async def _fire_tx(self, override_hvac=None, override_temp=None, override_fan=None):
-        hvac = override_hvac if override_hvac is not None else self.device.hvac_mode
-        temp = override_temp if override_temp is not None else self.device.target_temp
-        fan = override_fan if override_fan is not None else self.device.fan_mode
-
-        turn_on = hvac != HVACMode.OFF
-        mode_hex = 0 
-        if hvac == HVACMode.DRY: mode_hex = 1
-        elif hvac == HVACMode.FAN_ONLY: mode_hex = 2
-        elif hvac == HVACMode.HEAT: mode_hex = 4
-
-        fan_hex = 2 
-        if fan == FAN_LOW: fan_hex = 1
-        elif fan == FAN_HIGH: fan_hex = 3
-        elif fan == "auto": fan_hex = 4
-        elif fan == "silent": fan_hex = 5
-        elif fan == "turbo": fan_hex = 6
-
-        packet = make_control_packet(self.device.real_id, mode_hex, fan_hex, temp, turn_on, self.device.child_lock, self.device.plasma_ion)
+    async def _fire_tx(self, **kwargs):
+        packet = self.device.make_tx_packet(**kwargs)
         writer = self.hass.data[DOMAIN][self.entry_id]["writer"]
         if writer:
             try:

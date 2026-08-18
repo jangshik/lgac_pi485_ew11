@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.climate.const import HVACMode, FAN_MEDIUM, FAN_LOW, FAN_HIGH
@@ -40,20 +41,66 @@ class LGDeviceState:
         self.lock_fan = False
         self.lock_mode = False
         self.power_only = False
+        
         self.sleep_timer = 0
         self.timer_remaining = 0
+        self.timer_end_time = None 
         
         self._listeners = []
 
     def register_listener(self, listener):
         self._listeners.append(listener)
 
+    def set_sleep_timer(self, minutes):
+        self.sleep_timer = minutes
+        if minutes > 0:
+            self.timer_end_time = time.time() + (minutes * 60)
+            self.timer_remaining = minutes
+        else:
+            self.timer_end_time = None
+            self.timer_remaining = 0
+        for listener in self._listeners: listener()
+
+    def make_tx_packet(self, override_hvac=None, override_temp=None, override_fan=None, override_lock=None, override_plasma=None, override_swing=None) -> bytes:
+        hvac = override_hvac if override_hvac is not None else self.hvac_mode
+        temp = override_temp if override_temp is not None else self.target_temp
+        fan = override_fan if override_fan is not None else self.fan_mode
+        lock = override_lock if override_lock is not None else self.child_lock
+        plasma = override_plasma if override_plasma is not None else self.plasma_ion
+        swing = override_swing if override_swing is not None else self.swing_state
+
+        tx4 = 0x02  # Write flag
+        if hvac != HVACMode.OFF: tx4 |= 0x01
+        if lock: tx4 |= 0x04
+        if plasma: tx4 |= 0x10
+
+        mode_hex = 0
+        if hvac == HVACMode.DRY: mode_hex = 1
+        elif hvac == HVACMode.FAN_ONLY: mode_hex = 2
+        elif hvac == HVACMode.HEAT: mode_hex = 4
+
+        fan_hex = 2
+        if fan == FAN_LOW: fan_hex = 1
+        elif fan == FAN_HIGH: fan_hex = 3
+        elif fan == "auto": fan_hex = 4
+        elif fan == "silent": fan_hex = 5
+        elif fan == "turbo": fan_hex = 6
+
+        tx5 = (mode_hex & 0x07) | ((fan_hex & 0x07) << 4)
+        if swing: tx5 |= 0x08 
+
+        tx6 = int(temp) - 15
+        tx6 = max(1, min(20, tx6)) # 최대 35도까지 허용하도록 안전범위 확장
+
+        base_packet = bytearray([0x00, 0x00, 0xA0, self.real_id, tx4, tx5, tx6])
+        base_packet.append(calculate_checksum(base_packet))
+        return bytes(base_packet)
+
     def update_from_packet(self, packet: bytes):
         if len(packet) < 16 or packet[0] != 0x10: return
         try:
             self.raw_packet = packet.hex().upper()
             
-            # 🌟 [원본 프로토콜 복구] 전원, 잠금, 음이온 플래그는 RX1(인덱스 1)에 있습니다!
             self.is_on = bool(packet[1] & 0x01)
             self.child_lock = bool(packet[1] & 0x04)
             self.plasma_ion = bool(packet[1] & 0x10)
@@ -78,7 +125,11 @@ class LGDeviceState:
             self.zone_design_load = packet[13]
             self.odu_total_load = packet[14]
 
-            if not self.is_on: self.hvac_mode = HVACMode.OFF
+            if not self.is_on: 
+                self.hvac_mode = HVACMode.OFF
+                self.sleep_timer = 0
+                self.timer_end_time = None
+                self.timer_remaining = 0
             else:
                 if mode_raw == 0: self.hvac_mode = HVACMode.COOL
                 elif mode_raw == 1: self.hvac_mode = HVACMode.DRY
@@ -93,15 +144,9 @@ class LGDeviceState:
                 elif fan_raw == 5: self.fan_mode = "silent"
                 elif fan_raw == 6: self.fan_mode = "turbo"
 
-            if self.sleep_timer > 0 and self.is_on:
-                self.timer_remaining = max(0, self.timer_remaining - 1)
-                if self.timer_remaining == 0:
-                    self.sleep_timer = 0
-                    self.is_on = False
-                    self.hvac_mode = HVACMode.OFF
-
             for listener in self._listeners: listener()
         except Exception as e: _LOGGER.error(f"패킷 분석 오류: {e}")
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
@@ -140,8 +185,29 @@ async def ew11_poll_task(hass, entry, interval):
         await asyncio.sleep(interval)
         writer = hass.data[DOMAIN][entry.entry_id].get("writer")
         devices = hass.data[DOMAIN][entry.entry_id].get("devices", {})
+        now = time.time()
+        
         if writer:
-            for real_id in devices.keys():
+            for real_id, dev in devices.items():
+                if dev.sleep_timer > 0 and dev.timer_end_time and dev.is_on:
+                    remaining_secs = dev.timer_end_time - now
+                    if remaining_secs <= 0:
+                        dev.sleep_timer = 0
+                        dev.timer_end_time = None
+                        dev.timer_remaining = 0
+                        
+                        off_packet = dev.make_tx_packet(override_hvac=HVACMode.OFF)
+                        try:
+                            writer.write(off_packet)
+                            await writer.drain()
+                        except: pass
+                        for listener in dev._listeners: listener()
+                    else:
+                        new_remaining = int(remaining_secs / 60) + 1
+                        if new_remaining != dev.timer_remaining:
+                            dev.timer_remaining = new_remaining
+                            for listener in dev._listeners: listener()
+
                 try:
                     writer.write(make_poll_packet(real_id))
                     await writer.drain()
@@ -150,6 +216,7 @@ async def ew11_poll_task(hass, entry, interval):
 
 async def ew11_socket_task(hass, entry, host, port):
     while True:
+        writer = None
         try:
             reader, writer = await asyncio.open_connection(host, port)
             hass.data[DOMAIN][entry.entry_id]["writer"] = writer
@@ -160,8 +227,6 @@ async def ew11_socket_task(hass, entry, host, port):
                 buffer.extend(data)
                 
                 while len(buffer) >= 8:
-                    # 🌟 [오류 조건 삭제] 어설프게 buffer[1] 조건을 넣었던 부분을 삭제하여, 
-                    # 에어컨이 꺼져 있어도 체크섬만 맞으면 무조건 패킷을 통과시킵니다.
                     if buffer[0] in [0x00, 0x80, 0x10]:
                         packet_len = 16 if buffer[0] == 0x10 else 8
                         if len(buffer) >= packet_len:
@@ -169,15 +234,12 @@ async def ew11_socket_task(hass, entry, host, port):
                             
                             if buffer[packet_len-1] == csum:
                                 if buffer[0] == 0x10:
-                                    # 🌟 [원본 프로토콜 복구] 기기 주소(Zone Number)는 RX4(인덱스 4)에서 가져옵니다!
                                     real_id = buffer[4]
                                     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-                                    
                                     if real_id in devices: 
                                         devices[real_id].update_from_packet(bytes(buffer[:16]))
                                     else:
-                                        _LOGGER.warning(f"📡 미등록 에어컨 패킷 수신됨! 통신주소: 0x{real_id:02X} ({real_id}번)")
-                                        
+                                        _LOGGER.warning(f"📡 미등록 에어컨 패킷 수신됨! 통신주소: 0x{real_id:02X}")
                                 del buffer[:packet_len]
                             else:
                                 del buffer[0:1]
@@ -186,7 +248,14 @@ async def ew11_socket_task(hass, entry, host, port):
                         del buffer[0:1] 
         except Exception as e:
             _LOGGER.error(f"통신 에러 혹은 무응답 타임아웃, 재연결 시도 중... : {e}")
-            await asyncio.sleep(5)
+        finally:
+            # 🌟 [소켓 누수 방지] 에러 시 이전 소켓을 반드시 닫고 메모리를 비웁니다.
+            if writer:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except: pass
+        await asyncio.sleep(5)
 
 async def async_unload_entry(hass, entry):
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
