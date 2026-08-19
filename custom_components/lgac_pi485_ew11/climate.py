@@ -1,7 +1,8 @@
 import logging
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import (
-    ClimateEntityFeature, HVACMode, FAN_HIGH, FAN_MEDIUM, FAN_LOW, SWING_OFF, SWING_VERTICAL
+    ClimateEntityFeature, HVACMode, HVACAction, # 🌟 HVACAction 추가됨
+    FAN_HIGH, FAN_MEDIUM, FAN_LOW, SWING_OFF, SWING_VERTICAL
 )
 from homeassistant.const import UnitOfTemperature
 from .const import DOMAIN
@@ -37,6 +38,28 @@ class LGAirConditionerClimate(ClimateEntity):
 
     @property
     def hvac_mode(self): return self.device.hvac_mode
+
+    # 🌟 [디테일 추가] HA 대시보드 온도 조절기 카드의 "색상"을 결정하는 동작 상태
+    @property
+    def hvac_action(self):
+        if not self.device.is_on:
+            return HVACAction.OFF
+        
+        if self.device.hvac_mode == HVACMode.COOL:
+            return HVACAction.COOLING
+        elif self.device.hvac_mode == HVACMode.HEAT:
+            return HVACAction.HEATING
+        elif self.device.hvac_mode == HVACMode.DRY:
+            return HVACAction.DRYING
+        elif self.device.hvac_mode == HVACMode.FAN_ONLY:
+            return HVACAction.FAN
+        elif self.device.hvac_mode == HVACMode.AUTO:
+            if self.device.current_temp > self.device.target_temp:
+                return HVACAction.COOLING
+            else:
+                return HVACAction.HEATING
+        return HVACAction.IDLE
+
     @property
     def current_temperature(self): return self.device.current_temp
     @property
@@ -48,7 +71,6 @@ class LGAirConditionerClimate(ClimateEntity):
 
     async def async_set_hvac_mode(self, hvac_mode): 
         if not self.device.lock_mode and not self.device.power_only:
-            # 🌟 [낙관적 업데이트] UI 바운싱을 막기 위해 상태를 먼저 반영
             self.device.hvac_mode = hvac_mode
             self.device.is_on = (hvac_mode != HVACMode.OFF)
             self.async_write_ha_state()
