@@ -14,10 +14,13 @@ class LGDeviceState:
         self.entity_idx = entity_idx
         self.real_id = real_id
         self.name = name
-        self.temp_step = temp_step
+        self.temp_step = 1.0 # 🌟 무조건 1도로 강제
         self.has_heat = has_heat
         self.has_plasma = has_plasma
         self.system_type = system_type 
+        
+        self.is_online = False # 🌟 통신 생존 여부 추적
+        self.last_rx_time = 0
         
         self.is_on = False
         self.hvac_mode = HVACMode.OFF
@@ -69,7 +72,7 @@ class LGDeviceState:
         plasma = override_plasma if override_plasma is not None else self.plasma_ion
         swing = override_swing if override_swing is not None else self.swing_state
 
-        tx4 = 0x02  # Write flag
+        tx4 = 0x02
         if hvac != HVACMode.OFF: tx4 |= 0x01
         if lock: tx4 |= 0x04
         if plasma: tx4 |= 0x10
@@ -78,6 +81,7 @@ class LGDeviceState:
         if hvac == HVACMode.DRY: mode_hex = 1
         elif hvac == HVACMode.FAN_ONLY: mode_hex = 2
         elif hvac == HVACMode.HEAT: mode_hex = 4
+        elif hvac == HVACMode.AUTO: mode_hex = 3 # 🌟 AUTO 모드 코드 할당
 
         fan_hex = 2
         if fan == FAN_LOW: fan_hex = 1
@@ -89,8 +93,9 @@ class LGDeviceState:
         tx5 = (mode_hex & 0x07) | ((fan_hex & 0x07) << 4)
         if swing: tx5 |= 0x08 
 
-        tx6 = int(temp) - 15
-        tx6 = max(1, min(20, tx6)) # 최대 35도까지 허용하도록 안전범위 확장
+        # 🌟 [버그 수정] 온도를 30도까지만 허용하도록 표준 규격 적용
+        tx6 = int(round(temp)) - 15
+        tx6 = max(1, min(15, tx6))
 
         base_packet = bytearray([0x00, 0x00, 0xA0, self.real_id, tx4, tx5, tx6])
         base_packet.append(calculate_checksum(base_packet))
@@ -100,11 +105,12 @@ class LGDeviceState:
         if len(packet) < 16 or packet[0] != 0x10: return
         try:
             self.raw_packet = packet.hex().upper()
+            self.last_rx_time = time.time()
+            self.is_online = True # 🌟 패킷이 들어오면 온라인 상태 회복
             
             self.is_on = bool(packet[1] & 0x01)
             self.child_lock = bool(packet[1] & 0x04)
             self.plasma_ion = bool(packet[1] & 0x10)
-            
             self.error_code = packet[5]
             
             mode_raw = packet[6] & 0x07
@@ -135,7 +141,7 @@ class LGDeviceState:
                 elif mode_raw == 1: self.hvac_mode = HVACMode.DRY
                 elif mode_raw == 2: self.hvac_mode = HVACMode.FAN_ONLY
                 elif mode_raw == 4: self.hvac_mode = HVACMode.HEAT
-                else: self.hvac_mode = HVACMode.AUTO
+                else: self.hvac_mode = HVACMode.AUTO # 🌟 AUTO 모드 수신 가능
                 
                 if fan_raw == 1: self.fan_mode = FAN_LOW
                 elif fan_raw == 2: self.fan_mode = FAN_MEDIUM
@@ -146,7 +152,6 @@ class LGDeviceState:
 
             for listener in self._listeners: listener()
         except Exception as e: _LOGGER.error(f"패킷 분석 오류: {e}")
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
@@ -189,6 +194,12 @@ async def ew11_poll_task(hass, entry, interval):
         
         if writer:
             for real_id, dev in devices.items():
+                # 🌟 [추가] 60초 이상 패킷을 못 받으면 오프라인 처리 (리뷰 16번 반영)
+                if now - dev.last_rx_time > 60:
+                    if dev.is_online:
+                        dev.is_online = False
+                        for listener in dev._listeners: listener()
+
                 if dev.sleep_timer > 0 and dev.timer_end_time and dev.is_on:
                     remaining_secs = dev.timer_end_time - now
                     if remaining_secs <= 0:
@@ -238,8 +249,6 @@ async def ew11_socket_task(hass, entry, host, port):
                                     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
                                     if real_id in devices: 
                                         devices[real_id].update_from_packet(bytes(buffer[:16]))
-                                    else:
-                                        _LOGGER.warning(f"📡 미등록 에어컨 패킷 수신됨! 통신주소: 0x{real_id:02X}")
                                 del buffer[:packet_len]
                             else:
                                 del buffer[0:1]
@@ -247,9 +256,8 @@ async def ew11_socket_task(hass, entry, host, port):
                     else: 
                         del buffer[0:1] 
         except Exception as e:
-            _LOGGER.error(f"통신 에러 혹은 무응답 타임아웃, 재연결 시도 중... : {e}")
+            _LOGGER.error(f"통신 끊김, 재연결 중... : {e}")
         finally:
-            # 🌟 [소켓 누수 방지] 에러 시 이전 소켓을 반드시 닫고 메모리를 비웁니다.
             if writer:
                 try:
                     writer.close()

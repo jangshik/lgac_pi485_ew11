@@ -64,7 +64,6 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
         self.host = None
         self.port = None
-        self.temp_step = None
         self.update_interval = 10
         self.discovered_ids = []
 
@@ -72,7 +71,6 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self.host = user_input["host"]
             self.port = user_input["port"]
-            self.temp_step = user_input["temp_step"]
             self.update_interval = user_input["update_interval"]
             scan_duration = user_input["scan_duration"]
             
@@ -82,7 +80,6 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         data_schema = vol.Schema({
             vol.Required("host", default="192.168.0."): str,
             vol.Required("port", default=8899): int,
-            vol.Required("temp_step", default=1.0): vol.In({0.5: "0.5도 단위", 1.0: "1.0도 단위"}),
             vol.Required("update_interval", default=10): vol.In({5: "5초", 10: "10초", 30: "30초", 60: "1분"}),
             vol.Required("scan_duration", default=5.0): vol.In({3.0: "3초 (빠른 스캔)", 5.0: "5초 (기본값)", 10.0: "10초 (정밀 스캔)"}),
         })
@@ -108,7 +105,7 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data = {
                 "host": self.host,
                 "port": self.port,
-                "temp_step": self.temp_step,
+                "temp_step": 1.0, # 🌟 1.0도로 고정 저장
                 "update_interval": self.update_interval,
                 "mapping": ", ".join(mapping_parts)
             }
@@ -129,7 +126,7 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
         default_manual_value = ""
         if not self.discovered_ids:
-            default_manual_value = "01:01/거실 에어컨/0/0/M, 02:02/안방 에어컨/0/0/M"
+            default_manual_value = "01:01/거실 에어컨/0/0/M, 02:02/안방 에어컨/0/0/M" # 🌟 M으로 기본값 수정
 
         schema_dict[vol.Optional("manual_mapping", default=default_manual_value)] = str
         desc = "기기 옵션을 설정하세요. 수동 매핑 형식: `엔티티번호:통신주소/기기이름/난방(1/0)/음이온(1/0)/타입(M/S)`"

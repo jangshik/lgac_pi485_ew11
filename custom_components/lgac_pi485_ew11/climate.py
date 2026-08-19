@@ -1,7 +1,7 @@
 import logging
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import (
-    ClimateEntityFeature, HVACMode, HVACAction, # 🌟 HVACAction 추가됨
+    ClimateEntityFeature, HVACMode, HVACAction,
     FAN_HIGH, FAN_MEDIUM, FAN_LOW, SWING_OFF, SWING_VERTICAL
 )
 from homeassistant.const import UnitOfTemperature
@@ -24,10 +24,11 @@ class LGAirConditionerClimate(ClimateEntity):
         self._attr_name = device.name
         self._attr_device_info = {"identifiers": {(DOMAIN, f"lgac_device_{device.real_id}")}, "name": device.name, "manufacturer": "LG"}
         self._attr_temperature_unit = UnitOfTemperature.CELSIUS
-        self._attr_target_temperature_step = device.temp_step
+        self._attr_target_temperature_step = 1.0 # 🌟 1도 단위로 고정
         self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE | ClimateEntityFeature.SWING_MODE
         
-        self._attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.DRY, HVACMode.FAN_ONLY]
+        # 🌟 [버그 수정] HVACMode.AUTO 를 정식으로 지원 리스트에 추가!
+        self._attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.DRY, HVACMode.FAN_ONLY, HVACMode.AUTO]
         if device.has_heat: self._attr_hvac_modes.append(HVACMode.HEAT)
             
         self._attr_fan_modes = [FAN_LOW, FAN_MEDIUM, FAN_HIGH, "auto", "silent", "turbo"]
@@ -37,27 +38,25 @@ class LGAirConditionerClimate(ClimateEntity):
         self.device.register_listener(self.async_write_ha_state)
 
     @property
+    def available(self):
+        """🌟 [추가] 통신 끊김 시 기기를 사용할 수 없음으로 표시"""
+        return self.device.is_online
+
+    @property
     def hvac_mode(self): return self.device.hvac_mode
 
-    # 🌟 [디테일 추가] HA 대시보드 온도 조절기 카드의 "색상"을 결정하는 동작 상태
     @property
     def hvac_action(self):
-        if not self.device.is_on:
-            return HVACAction.OFF
+        """🌟 대시보드에 동작 색상을 완벽하게 뿌려주는 로직"""
+        if not self.device.is_online: return None
+        if not self.device.is_on: return HVACAction.OFF
         
-        if self.device.hvac_mode == HVACMode.COOL:
-            return HVACAction.COOLING
-        elif self.device.hvac_mode == HVACMode.HEAT:
-            return HVACAction.HEATING
-        elif self.device.hvac_mode == HVACMode.DRY:
-            return HVACAction.DRYING
-        elif self.device.hvac_mode == HVACMode.FAN_ONLY:
-            return HVACAction.FAN
+        if self.device.hvac_mode == HVACMode.COOL: return HVACAction.COOLING
+        elif self.device.hvac_mode == HVACMode.HEAT: return HVACAction.HEATING
+        elif self.device.hvac_mode == HVACMode.DRY: return HVACAction.DRYING
+        elif self.device.hvac_mode == HVACMode.FAN_ONLY: return HVACAction.FAN
         elif self.device.hvac_mode == HVACMode.AUTO:
-            if self.device.current_temp > self.device.target_temp:
-                return HVACAction.COOLING
-            else:
-                return HVACAction.HEATING
+            return HVACAction.COOLING if self.device.current_temp > self.device.target_temp else HVACAction.HEATING
         return HVACAction.IDLE
 
     @property
@@ -75,17 +74,14 @@ class LGAirConditionerClimate(ClimateEntity):
             self.device.is_on = (hvac_mode != HVACMode.OFF)
             self.async_write_ha_state()
             await self._fire_tx(override_hvac=hvac_mode)
-        elif self.device.power_only and hvac_mode in [HVACMode.OFF, HVACMode.COOL]: 
-            self.device.hvac_mode = hvac_mode
-            self.device.is_on = (hvac_mode != HVACMode.OFF)
-            self.async_write_ha_state()
-            await self._fire_tx(override_hvac=hvac_mode)
 
     async def async_set_temperature(self, **kwargs):
         if "temperature" in kwargs and not self.device.lock_temp and not self.device.power_only: 
-            self.device.target_temp = kwargs["temperature"]
+            # 🌟 온도를 정수로 반올림하여 전송 준비
+            temp_val = round(kwargs["temperature"])
+            self.device.target_temp = temp_val
             self.async_write_ha_state()
-            await self._fire_tx(override_temp=kwargs["temperature"])
+            await self._fire_tx(override_temp=temp_val)
 
     async def async_set_fan_mode(self, fan_mode): 
         if not self.device.lock_fan and not self.device.power_only:
