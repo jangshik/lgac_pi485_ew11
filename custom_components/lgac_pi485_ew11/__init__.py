@@ -93,7 +93,6 @@ class LGDeviceState:
         tx5 = (mode_hex & 0x07) | ((fan_hex & 0x07) << 4)
         if swing: tx5 |= 0x08 
 
-        # 🌟 [버그 수정] 지시서 1번 반영: 온도를 30도(15)까지만 허용하도록 표준 규격 적용
         tx6 = int(round(temp)) - 15
         tx6 = max(1, min(15, tx6))
 
@@ -104,10 +103,22 @@ class LGDeviceState:
     def update_from_packet(self, packet: bytes):
         if len(packet) < 16 or packet[0] != 0x10: return
         try:
+            # 🌟 [스마트 필터 1] 이전 상태의 핵심 변수들을 튜플로 기록
+            # 온도는 0.3도 단위 노이즈를 막기 위해 소수점 1자리에서 묶음
+            prev_online = self.is_online
+            old_state = (
+                self.is_on, self.hvac_mode, self.fan_mode, self.target_temp,
+                round(self.current_temp, 1), round(self.pipe_in, 1), round(self.pipe_out, 1),
+                self.zone_active_load, self.odu_total_load, self.zone_power_state_flag,
+                self.error_code, self.swing_state, self.child_lock, self.plasma_ion,
+                self.timer_remaining
+            )
+
             self.raw_packet = packet.hex().upper()
             self.last_rx_time = time.time()
             self.is_online = True
             
+            # --- 16바이트 상태 업데이트 진행 ---
             self.is_on = bool(packet[1] & 0x01)
             self.child_lock = bool(packet[1] & 0x04)
             self.plasma_ion = bool(packet[1] & 0x10)
@@ -150,7 +161,20 @@ class LGDeviceState:
                 elif fan_raw == 5: self.fan_mode = "silent"
                 elif fan_raw == 6: self.fan_mode = "turbo"
 
-            for listener in self._listeners: listener()
+            # 🌟 [스마트 필터 2] 방금 파싱된 값들로 새로운 스냅샷 생성
+            new_state = (
+                self.is_on, self.hvac_mode, self.fan_mode, self.target_temp,
+                round(self.current_temp, 1), round(self.pipe_in, 1), round(self.pipe_out, 1),
+                self.zone_active_load, self.odu_total_load, self.zone_power_state_flag,
+                self.error_code, self.swing_state, self.child_lock, self.plasma_ion,
+                self.timer_remaining
+            )
+
+            # 🌟 [스마트 필터 3] 통신이 뻗었다 돌아왔거나, 튜플 값 중 단 하나라도 변했을 때만 HA 갱신!
+            # (raw_packet은 스냅샷에 없으므로, 체크섬만 바뀐 패킷은 여기서 컷오프 됩니다.)
+            if not prev_online or old_state != new_state:
+                for listener in self._listeners: listener()
+                
         except Exception as e: _LOGGER.error(f"패킷 분석 오류: {e}")
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

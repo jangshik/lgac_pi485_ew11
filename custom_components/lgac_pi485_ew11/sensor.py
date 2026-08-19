@@ -1,6 +1,6 @@
 import logging
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import UnitOfTemperature, EntityCategory
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,7 +17,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities.append(LGACSensor(device, "zone_design_load_index", "정격 용량 가중치", None, "mdi:weight"))
         entities.append(LGACSensor(device, "odu_total_load", "실외기 총 열부하", None, "mdi:speedometer"))
         entities.append(LGACSensor(device, "timer_remaining", "남은 수면 타이머", "min", "mdi:timer-sand"))
+        
+        # 🌟 수신 패킷 센서 생성 (아래 클래스에서 비활성화 속성 부여됨)
         entities.append(LGACSensor(device, "raw_packet", "수신 패킷", None, "mdi:network-packet"))
+        
     async_add_entities(entities)
     return True
 
@@ -31,6 +34,11 @@ class LGACSensor(SensorEntity):
         self._attr_device_info = {"identifiers": {(DOMAIN, f"lgac_device_{device.real_id}")}}
         self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
+
+        # 🌟 [핵심] raw_packet 센서는 진단용으로 숨김 처리
+        if sensor_type == "raw_packet":
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+            self._attr_entity_registry_enabled_default = False
 
     async def async_added_to_hass(self):
         self.device.register_listener(self.async_write_ha_state)
