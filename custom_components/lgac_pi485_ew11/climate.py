@@ -24,10 +24,9 @@ class LGAirConditionerClimate(ClimateEntity):
         self._attr_name = device.name
         self._attr_device_info = {"identifiers": {(DOMAIN, f"lgac_device_{device.real_id}")}, "name": device.name, "manufacturer": "LG"}
         self._attr_temperature_unit = UnitOfTemperature.CELSIUS
-        self._attr_target_temperature_step = 1.0 # 🌟 1도 단위로 고정
+        self._attr_target_temperature_step = 1.0 
         self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE | ClimateEntityFeature.SWING_MODE
         
-        # 🌟 [버그 수정] HVACMode.AUTO 를 정식으로 지원 리스트에 추가!
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.DRY, HVACMode.FAN_ONLY, HVACMode.AUTO]
         if device.has_heat: self._attr_hvac_modes.append(HVACMode.HEAT)
             
@@ -39,17 +38,28 @@ class LGAirConditionerClimate(ClimateEntity):
 
     @property
     def available(self):
-        """🌟 [추가] 통신 끊김 시 기기를 사용할 수 없음으로 표시"""
         return self.device.is_online
+
+    # 🌟 [버그 수정] HA 대시보드 온도 조절기 범위를 18~30도로 엄격히 제한
+    @property
+    def min_temp(self):
+        return 18.0
+
+    @property
+    def max_temp(self):
+        return 30.0
 
     @property
     def hvac_mode(self): return self.device.hvac_mode
 
     @property
     def hvac_action(self):
-        """🌟 대시보드에 동작 색상을 완벽하게 뿌려주는 로직"""
-        if not self.device.is_online: return None
+        """🌟 히스토리 그래프 색상을 결정하는 동작 상태"""
         if not self.device.is_on: return HVACAction.OFF
+        
+        # 지시서 13번 권장사항: 만약 컴프레서가 쉴 때 그래프를 회색으로 끊어지게 만들고 싶다면 아래 두 줄의 주석을 푸세요.
+        # if self.device.zone_active_load == 0 and self.device.hvac_mode != HVACMode.FAN_ONLY:
+        #     return HVACAction.IDLE
         
         if self.device.hvac_mode == HVACMode.COOL: return HVACAction.COOLING
         elif self.device.hvac_mode == HVACMode.HEAT: return HVACAction.HEATING
@@ -74,10 +84,14 @@ class LGAirConditionerClimate(ClimateEntity):
             self.device.is_on = (hvac_mode != HVACMode.OFF)
             self.async_write_ha_state()
             await self._fire_tx(override_hvac=hvac_mode)
+        elif self.device.power_only and hvac_mode in [HVACMode.OFF, HVACMode.COOL]: 
+            self.device.hvac_mode = hvac_mode
+            self.device.is_on = (hvac_mode != HVACMode.OFF)
+            self.async_write_ha_state()
+            await self._fire_tx(override_hvac=hvac_mode)
 
     async def async_set_temperature(self, **kwargs):
         if "temperature" in kwargs and not self.device.lock_temp and not self.device.power_only: 
-            # 🌟 온도를 정수로 반올림하여 전송 준비
             temp_val = round(kwargs["temperature"])
             self.device.target_temp = temp_val
             self.async_write_ha_state()

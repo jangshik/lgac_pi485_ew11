@@ -14,12 +14,12 @@ class LGDeviceState:
         self.entity_idx = entity_idx
         self.real_id = real_id
         self.name = name
-        self.temp_step = 1.0 # 🌟 무조건 1도로 강제
+        self.temp_step = 1.0
         self.has_heat = has_heat
         self.has_plasma = has_plasma
         self.system_type = system_type 
         
-        self.is_online = False # 🌟 통신 생존 여부 추적
+        self.is_online = False
         self.last_rx_time = 0
         
         self.is_on = False
@@ -81,7 +81,7 @@ class LGDeviceState:
         if hvac == HVACMode.DRY: mode_hex = 1
         elif hvac == HVACMode.FAN_ONLY: mode_hex = 2
         elif hvac == HVACMode.HEAT: mode_hex = 4
-        elif hvac == HVACMode.AUTO: mode_hex = 3 # 🌟 AUTO 모드 코드 할당
+        elif hvac == HVACMode.AUTO: mode_hex = 3 
 
         fan_hex = 2
         if fan == FAN_LOW: fan_hex = 1
@@ -93,7 +93,7 @@ class LGDeviceState:
         tx5 = (mode_hex & 0x07) | ((fan_hex & 0x07) << 4)
         if swing: tx5 |= 0x08 
 
-        # 🌟 [버그 수정] 온도를 30도까지만 허용하도록 표준 규격 적용
+        # 🌟 [버그 수정] 지시서 1번 반영: 온도를 30도(15)까지만 허용하도록 표준 규격 적용
         tx6 = int(round(temp)) - 15
         tx6 = max(1, min(15, tx6))
 
@@ -106,7 +106,7 @@ class LGDeviceState:
         try:
             self.raw_packet = packet.hex().upper()
             self.last_rx_time = time.time()
-            self.is_online = True # 🌟 패킷이 들어오면 온라인 상태 회복
+            self.is_online = True
             
             self.is_on = bool(packet[1] & 0x01)
             self.child_lock = bool(packet[1] & 0x04)
@@ -141,7 +141,7 @@ class LGDeviceState:
                 elif mode_raw == 1: self.hvac_mode = HVACMode.DRY
                 elif mode_raw == 2: self.hvac_mode = HVACMode.FAN_ONLY
                 elif mode_raw == 4: self.hvac_mode = HVACMode.HEAT
-                else: self.hvac_mode = HVACMode.AUTO # 🌟 AUTO 모드 수신 가능
+                else: self.hvac_mode = HVACMode.AUTO
                 
                 if fan_raw == 1: self.fan_mode = FAN_LOW
                 elif fan_raw == 2: self.fan_mode = FAN_MEDIUM
@@ -179,8 +179,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN][entry.entry_id] = {"devices": devices, "writer": None}
     
-    hass.loop.create_task(ew11_socket_task(hass, entry, host, port))
-    hass.loop.create_task(ew11_poll_task(hass, entry, update_interval))
+    hass.data[DOMAIN][entry.entry_id]["socket_task"] = hass.loop.create_task(ew11_socket_task(hass, entry, host, port))
+    hass.data[DOMAIN][entry.entry_id]["poll_task"] = hass.loop.create_task(ew11_poll_task(hass, entry, update_interval))
     
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -194,7 +194,6 @@ async def ew11_poll_task(hass, entry, interval):
         
         if writer:
             for real_id, dev in devices.items():
-                # 🌟 [추가] 60초 이상 패킷을 못 받으면 오프라인 처리 (리뷰 16번 반영)
                 if now - dev.last_rx_time > 60:
                     if dev.is_online:
                         dev.is_online = False
@@ -267,5 +266,14 @@ async def ew11_socket_task(hass, entry, host, port):
 
 async def async_unload_entry(hass, entry):
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok: hass.data[DOMAIN].pop(entry.entry_id)
+    
+    if unload_ok:
+        entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
+        if "socket_task" in entry_data:
+            entry_data["socket_task"].cancel()
+        if "poll_task" in entry_data:
+            entry_data["poll_task"].cancel()
+            
+        hass.data[DOMAIN].pop(entry.entry_id)
+        
     return unload_ok
