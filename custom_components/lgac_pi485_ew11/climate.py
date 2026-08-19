@@ -40,7 +40,6 @@ class LGAirConditionerClimate(ClimateEntity):
     def available(self):
         return self.device.is_online
 
-    # 🌟 [버그 수정] HA 대시보드 온도 조절기 범위를 18~30도로 엄격히 제한
     @property
     def min_temp(self):
         return 18.0
@@ -54,13 +53,7 @@ class LGAirConditionerClimate(ClimateEntity):
 
     @property
     def hvac_action(self):
-        """🌟 히스토리 그래프 색상을 결정하는 동작 상태"""
         if not self.device.is_on: return HVACAction.OFF
-        
-        # 지시서 13번 권장사항: 만약 컴프레서가 쉴 때 그래프를 회색으로 끊어지게 만들고 싶다면 아래 두 줄의 주석을 푸세요.
-        # if self.device.zone_active_load == 0 and self.device.hvac_mode != HVACMode.FAN_ONLY:
-        #     return HVACAction.IDLE
-        
         if self.device.hvac_mode == HVACMode.COOL: return HVACAction.COOLING
         elif self.device.hvac_mode == HVACMode.HEAT: return HVACAction.HEATING
         elif self.device.hvac_mode == HVACMode.DRY: return HVACAction.DRYING
@@ -80,34 +73,26 @@ class LGAirConditionerClimate(ClimateEntity):
 
     async def async_set_hvac_mode(self, hvac_mode): 
         if not self.device.lock_mode and not self.device.power_only:
-            self.device.hvac_mode = hvac_mode
-            self.device.is_on = (hvac_mode != HVACMode.OFF)
-            self.async_write_ha_state()
+            # 🌟 낙관적 업데이트(self.device.hvac_mode = hvac_mode) 삭제. 무조건 패킷 응답 대기.
             await self._fire_tx(override_hvac=hvac_mode)
         elif self.device.power_only and hvac_mode in [HVACMode.OFF, HVACMode.COOL]: 
-            self.device.hvac_mode = hvac_mode
-            self.device.is_on = (hvac_mode != HVACMode.OFF)
-            self.async_write_ha_state()
             await self._fire_tx(override_hvac=hvac_mode)
 
     async def async_set_temperature(self, **kwargs):
         if "temperature" in kwargs and not self.device.lock_temp and not self.device.power_only: 
             temp_val = round(kwargs["temperature"])
-            self.device.target_temp = temp_val
-            self.async_write_ha_state()
+            # 🌟 UI 선반영 로직 삭제. 
             await self._fire_tx(override_temp=temp_val)
 
     async def async_set_fan_mode(self, fan_mode): 
         if not self.device.lock_fan and not self.device.power_only:
-            self.device.fan_mode = fan_mode
-            self.async_write_ha_state()
+            # 🌟 UI 선반영 로직 삭제.
             await self._fire_tx(override_fan=fan_mode)
 
     async def async_set_swing_mode(self, swing_mode): 
         if not self.device.power_only:
             is_swing = (swing_mode == SWING_VERTICAL)
-            self.device.swing_state = is_swing
-            self.async_write_ha_state()
+            # 🌟 UI 선반영 로직 삭제.
             await self._fire_tx(override_swing=is_swing)
 
     async def _fire_tx(self, **kwargs):

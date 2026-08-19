@@ -37,15 +37,20 @@ class LGACSwitch(SwitchEntity):
         return getattr(self.device, self.switch_type, False)
 
     async def turn_on(self, **kwargs):
-        await self._toggle(True)
+        await self._send_command(True)
 
     async def turn_off(self, **kwargs):
-        await self._toggle(False)
+        await self._send_command(False)
 
-    async def _toggle(self, state):
-        setattr(self.device, self.switch_type, state)
-        self.async_write_ha_state()
+    async def _send_command(self, state):
+        # 🌟 낙관적 업데이트(setattr) 삭제 완료. 패킷만 전송합니다.
         
+        # 소프트웨어 락(HA 내부에서만 동작하는 락)일 경우만 즉시 반영
+        if self.switch_type in ["lock_temp", "lock_fan", "lock_mode", "power_only"]:
+            setattr(self.device, self.switch_type, state)
+            self.async_write_ha_state()
+            return
+            
         packet = None
         if self.switch_type == "child_lock":
             packet = self.device.make_tx_packet(override_lock=state)
