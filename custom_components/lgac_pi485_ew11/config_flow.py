@@ -7,7 +7,8 @@ from .const import DOMAIN, calculate_checksum
 _LOGGER = logging.getLogger(__name__)
 
 def make_scan_poll_packet(room_id: int) -> bytes:
-    base_packet = bytearray([0x00, 0x00, 0xA0, room_id, 0x00, 0x00, 0x00])
+    # 🌟 스캔(Polling)은 가장 안전한 00 00 A0 표준을 사용합니다.
+    base_packet = bytearray([0x00, 0x00, 0xA0, room_id, 0x00, 0x00, 0x09])
     base_packet.append(calculate_checksum(base_packet))
     return bytes(base_packet)
 
@@ -24,19 +25,20 @@ async def async_sniff_rs485(host, port, scan_duration=5.0):
                     if not data: break
                     buffer.extend(data)
                     
+                    # 🌟 0x10 검열을 삭제하여 어떤 응답이든 16바이트면 분석합니다.
                     while len(buffer) >= 8:
-                        if buffer[0] in [0x00, 0x80, 0x10]:
-                            packet_len = 16 if buffer[0] == 0x10 else 8
-                            if len(buffer) >= packet_len:
-                                csum = calculate_checksum(buffer[:packet_len-1])
-                                if buffer[packet_len-1] == csum:
-                                    if buffer[0] == 0x10:
-                                        discovered.add(buffer[4])
-                                    del buffer[:packet_len]
-                                else:
-                                    del buffer[0:1] 
-                            else: break
-                        else: del buffer[0:1]
+                        matched = False
+                        if len(buffer) >= 16:
+                            if buffer[15] == calculate_checksum(buffer[:15]):
+                                discovered.add(buffer[4])
+                                del buffer[:16]
+                                matched = True
+                        if not matched and len(buffer) >= 8:
+                            if buffer[7] == calculate_checksum(buffer[:7]):
+                                del buffer[:8]
+                                matched = True
+                        if not matched:
+                            del buffer[0:1]
                 except asyncio.TimeoutError: continue
                 except Exception: break
 
@@ -65,7 +67,7 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.host = None
         self.port = None
         self.update_interval = 10
-        self.header_type = "legacy"  # 🌟 헤더 타입 변수 추가
+        self.header_type = "legacy" # 🌟 헤더 타입 기본값 저장
         self.discovered_ids = []
 
     async def async_step_user(self, user_input=None):
@@ -73,20 +75,20 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.host = user_input["host"]
             self.port = user_input["port"]
             self.update_interval = user_input["update_interval"]
-            self.header_type = user_input["header_type"]  # 🌟 UI에서 선택한 헤더 방식 저장
+            self.header_type = user_input["header_type"] # 🌟 선택한 헤더 방식 저장
             scan_duration = user_input["scan_duration"]
             
-            self.discovered_ids = await async_sniff_rs485(self.host, self.port, scan_duration=scan_duration)
+            self.discovered_ids = await async_sniff_rs485(self.host, self.port, scan_duration)
             return await self.async_step_mapping()
 
-        # 🌟 헤더 타입 선택 드롭다운 추가
+        # 🌟 UI에 헤더 방식 선택 드롭다운 메뉴 추가
         data_schema = vol.Schema({
             vol.Required("host", default="192.168.0."): str,
             vol.Required("port", default=8899): int,
             vol.Required("update_interval", default=10): vol.In({5: "5초", 10: "10초", 30: "30초", 60: "1분"}),
             vol.Required("header_type", default="legacy"): vol.In({
-                "legacy": "레거시 방식 (기존에 사용하던 80 00 A3)",
-                "lgap": "LGAP 표준 방식 (00 00 A0)"
+                "legacy": "레거시 하이브리드 (제어 80 00 A3 / 상태 00 00 A0)",
+                "lgap": "LGAP 표준 전용 (제어/상태 모두 00 00 A0)"
             }),
             vol.Required("scan_duration", default=5.0): vol.In({3.0: "3초 (빠른 스캔)", 5.0: "5초 (기본값)", 10.0: "10초 (정밀 스캔)"}),
         })
@@ -114,7 +116,7 @@ class LGACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "port": self.port,
                 "temp_step": 1.0, 
                 "update_interval": self.update_interval,
-                "header_type": self.header_type,  # 🌟 최종 저장 데이터에 헤더 타입 포함
+                "header_type": self.header_type, # 🌟 최종 저장소에 헤더 방식 기록
                 "mapping": ", ".join(mapping_parts)
             }
             await self.async_set_unique_id(self.host)

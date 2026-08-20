@@ -9,23 +9,16 @@ from .const import DOMAIN, calculate_checksum
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["climate", "sensor", "switch", "number"]
 
-# ==============================================================
-# 🌟 [헤더 롤백 스위치] 🌟
-# True  = 기존 방식 (80 00 A3) - Silent, Turbo 등 특수명령 지원
-# False = 신규 표준 (00 00 A0) - 일반적인 기본 LGAP 규격
-# ==============================================================
-
-
 class LGDeviceState:
-    def __init__(self, entity_idx, real_id, name, temp_step, has_heat, has_plasma, system_type):
+    def __init__(self, entity_idx, real_id, name, temp_step, has_heat, has_plasma, system_type, header_type):
         self.entity_idx = entity_idx
         self.real_id = real_id
         self.name = name
-        self.temp_step = 1.0
+        self.temp_step = temp_step
         self.has_heat = has_heat
         self.has_plasma = has_plasma
         self.system_type = system_type 
-        self.header_type = header_type  # 👈 이 줄 추가
+        self.header_type = header_type  # 🌟 헤더 타입 설정 
         
         self.is_online = False
         self.last_rx_time = 0
@@ -80,7 +73,6 @@ class LGDeviceState:
         plasma = override_plasma if override_plasma is not None else self.plasma_ion
         swing = override_swing if override_swing is not None else self.swing_state
 
-        # 🌟 폴링(상태 읽기)일 때는 쓰기 비트를 끄고(0x00), 명령일 때는 켭니다(0x02)
         if is_poll:
             tx4 = 0x00
         else:
@@ -108,8 +100,9 @@ class LGDeviceState:
         tx6 = int(round(temp)) - 15
         tx6 = max(1, min(15, tx6))
 
-        # 👈 2. 기존 USE_LEGACY_HEADER 부분을 아래 코드로 교체
-        if self.header_type == "legacy":
+        # 🌟 [하이브리드 로직 핵심]
+        # 레거시 모드이면서, 폴링(읽기)이 아닐 때(즉, 명령을 내릴 때)만 80 00 A3 발동!
+        if self.header_type == "legacy" and not is_poll:
             base_packet = bytearray([0x80, 0x00, 0xA3, self.real_id, tx4, tx5, tx6])
         else:
             base_packet = bytearray([0x00, 0x00, 0xA0, self.real_id, tx4, tx5, tx6])
@@ -118,7 +111,7 @@ class LGDeviceState:
         return bytes(base_packet)
 
     def update_from_packet(self, packet: bytes):
-        if len(packet) < 16 or packet[0] != 0x10: return
+        if len(packet) < 16: return
         try:
             prev_online = self.is_online
             old_state = (
@@ -142,8 +135,6 @@ class LGDeviceState:
             self.swing_state = bool(packet[6] & 0x08)
             fan_raw = (packet[6] >> 4) & 0x07
             
-            # 🌟 [버그 수정] 에어컨이 꺼져 있을 때도 풍량(Fan) 정보를 읽어서 내부 메모리에 기억해둡니다.
-            # 이 코드가 if not self.is_on: 바깥으로 빠져나오면서 껐다 켜도 중풍으로 튕기지 않습니다.
             if fan_raw == 1: self.fan_mode = FAN_LOW
             elif fan_raw == 2: self.fan_mode = FAN_MEDIUM
             elif fan_raw == 3: self.fan_mode = FAN_HIGH
@@ -197,7 +188,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     mapping_str = entry.data["mapping"]
     temp_step = entry.data.get("temp_step", 1.0)
     update_interval = entry.data.get("update_interval", 10)
-    header_type = entry.data.get("header_type", "legacy") # 👈 이 줄 추가
+    header_type = entry.data.get("header_type", "legacy") 
 
     devices = {}
     for item in mapping_str.split(","):
@@ -211,9 +202,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             has_heat = parts[2].strip() == "1" if len(parts) > 2 else True
             has_plasma = parts[3].strip() == "1" if len(parts) > 3 else False
             sys_type = parts[4].strip() if len(parts) > 4 else "M"
-
-            devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat, has_plasma, sys_type, header_type)
             
+            devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat, has_plasma, sys_type, header_type)
         except Exception as e: continue
 
     hass.data[DOMAIN][entry.entry_id] = {"devices": devices, "writer": None}
@@ -258,7 +248,6 @@ async def ew11_poll_task(hass, entry, interval):
                             for listener in dev._listeners: listener()
 
                 try:
-                    # 🌟 폴링 패킷도 클래스 내부의 make_tx_packet을 통해 일관된 헤더 규격을 타도록 변경
                     poll_packet = dev.make_tx_packet(is_poll=True)
                     writer.write(poll_packet)
                     await writer.drain()
@@ -277,24 +266,27 @@ async def ew11_socket_task(hass, entry, host, port):
                 if not data: break
                 buffer.extend(data)
                 
+                # 🌟 0x10 검열 완전히 삭제된 수신부!
                 while len(buffer) >= 8:
-                    if buffer[0] in [0x00, 0x80, 0x10]:
-                        packet_len = 16 if buffer[0] == 0x10 else 8
-                        if len(buffer) >= packet_len:
-                            csum = calculate_checksum(buffer[:packet_len-1])
+                    matched = False
+                    
+                    if len(buffer) >= 16:
+                        if buffer[15] == calculate_checksum(buffer[:15]):
+                            real_id = buffer[4]
+                            devices = hass.data[DOMAIN][entry.entry_id]["devices"]
+                            if real_id in devices: 
+                                devices[real_id].update_from_packet(bytes(buffer[:16]))
+                            del buffer[:16]
+                            matched = True
                             
-                            if buffer[packet_len-1] == csum:
-                                if buffer[0] == 0x10:
-                                    real_id = buffer[4]
-                                    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-                                    if real_id in devices: 
-                                        devices[real_id].update_from_packet(bytes(buffer[:16]))
-                                del buffer[:packet_len]
-                            else:
-                                del buffer[0:1]
-                        else: break 
-                    else: 
+                    if not matched and len(buffer) >= 8:
+                        if buffer[7] == calculate_checksum(buffer[:7]):
+                            del buffer[:8]
+                            matched = True
+                            
+                    if not matched:
                         del buffer[0:1] 
+                        
         except Exception as e:
             _LOGGER.error(f"통신 끊김, 재연결 중... : {e}")
         finally:
