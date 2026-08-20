@@ -4,10 +4,17 @@ import time
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.climate.const import HVACMode, FAN_MEDIUM, FAN_LOW, FAN_HIGH
-from .const import DOMAIN, make_poll_packet, calculate_checksum
+from .const import DOMAIN, calculate_checksum
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["climate", "sensor", "switch", "number"]
+
+# ==============================================================
+# 🌟 [헤더 롤백 스위치] 🌟
+# True  = 기존 방식 (80 00 A3) - Silent, Turbo 등 특수명령 지원
+# False = 신규 표준 (00 00 A0) - 일반적인 기본 LGAP 규격
+# ==============================================================
+USE_LEGACY_HEADER = True
 
 class LGDeviceState:
     def __init__(self, entity_idx, real_id, name, temp_step, has_heat, has_plasma, system_type):
@@ -64,7 +71,7 @@ class LGDeviceState:
             self.timer_remaining = 0
         for listener in self._listeners: listener()
 
-    def make_tx_packet(self, override_hvac=None, override_temp=None, override_fan=None, override_lock=None, override_plasma=None, override_swing=None) -> bytes:
+    def make_tx_packet(self, override_hvac=None, override_temp=None, override_fan=None, override_lock=None, override_plasma=None, override_swing=None, is_poll=False) -> bytes:
         hvac = override_hvac if override_hvac is not None else self.hvac_mode
         temp = override_temp if override_temp is not None else self.target_temp
         fan = override_fan if override_fan is not None else self.fan_mode
@@ -72,10 +79,14 @@ class LGDeviceState:
         plasma = override_plasma if override_plasma is not None else self.plasma_ion
         swing = override_swing if override_swing is not None else self.swing_state
 
-        tx4 = 0x02
-        if hvac != HVACMode.OFF: tx4 |= 0x01
-        if lock: tx4 |= 0x04
-        if plasma: tx4 |= 0x10
+        # 🌟 폴링(상태 읽기)일 때는 쓰기 비트를 끄고(0x00), 명령일 때는 켭니다(0x02)
+        if is_poll:
+            tx4 = 0x00
+        else:
+            tx4 = 0x02
+            if hvac != HVACMode.OFF: tx4 |= 0x01
+            if lock: tx4 |= 0x04
+            if plasma: tx4 |= 0x10
 
         mode_hex = 0
         if hvac == HVACMode.DRY: mode_hex = 1
@@ -96,15 +107,18 @@ class LGDeviceState:
         tx6 = int(round(temp)) - 15
         tx6 = max(1, min(15, tx6))
 
-        base_packet = bytearray([0x00, 0x00, 0xA0, self.real_id, tx4, tx5, tx6])
+        # 🌟 [롤백 스위치 적용] USE_LEGACY_HEADER 값에 따라 헤더가 0x80 00 A3 또는 00 00 A0로 전송됩니다.
+        if USE_LEGACY_HEADER:
+            base_packet = bytearray([0x80, 0x00, 0xA3, self.real_id, tx4, tx5, tx6])
+        else:
+            base_packet = bytearray([0x00, 0x00, 0xA0, self.real_id, tx4, tx5, tx6])
+            
         base_packet.append(calculate_checksum(base_packet))
         return bytes(base_packet)
 
     def update_from_packet(self, packet: bytes):
         if len(packet) < 16 or packet[0] != 0x10: return
         try:
-            # 🌟 [스마트 필터 1] 이전 상태의 핵심 변수들을 튜플로 기록
-            # 온도는 0.3도 단위 노이즈를 막기 위해 소수점 1자리에서 묶음
             prev_online = self.is_online
             old_state = (
                 self.is_on, self.hvac_mode, self.fan_mode, self.target_temp,
@@ -118,7 +132,6 @@ class LGDeviceState:
             self.last_rx_time = time.time()
             self.is_online = True
             
-            # --- 16바이트 상태 업데이트 진행 ---
             self.is_on = bool(packet[1] & 0x01)
             self.child_lock = bool(packet[1] & 0x04)
             self.plasma_ion = bool(packet[1] & 0x10)
@@ -127,6 +140,15 @@ class LGDeviceState:
             mode_raw = packet[6] & 0x07
             self.swing_state = bool(packet[6] & 0x08)
             fan_raw = (packet[6] >> 4) & 0x07
+            
+            # 🌟 [버그 수정] 에어컨이 꺼져 있을 때도 풍량(Fan) 정보를 읽어서 내부 메모리에 기억해둡니다.
+            # 이 코드가 if not self.is_on: 바깥으로 빠져나오면서 껐다 켜도 중풍으로 튕기지 않습니다.
+            if fan_raw == 1: self.fan_mode = FAN_LOW
+            elif fan_raw == 2: self.fan_mode = FAN_MEDIUM
+            elif fan_raw == 3: self.fan_mode = FAN_HIGH
+            elif fan_raw == 4: self.fan_mode = "auto"
+            elif fan_raw == 5: self.fan_mode = "silent"
+            elif fan_raw == 6: self.fan_mode = "turbo"
             
             if self.system_type == "M":
                 self.target_temp = float((packet[7] & 0x0F) + 15)
@@ -153,15 +175,7 @@ class LGDeviceState:
                 elif mode_raw == 2: self.hvac_mode = HVACMode.FAN_ONLY
                 elif mode_raw == 4: self.hvac_mode = HVACMode.HEAT
                 else: self.hvac_mode = HVACMode.AUTO
-                
-                if fan_raw == 1: self.fan_mode = FAN_LOW
-                elif fan_raw == 2: self.fan_mode = FAN_MEDIUM
-                elif fan_raw == 3: self.fan_mode = FAN_HIGH
-                elif fan_raw == 4: self.fan_mode = "auto"
-                elif fan_raw == 5: self.fan_mode = "silent"
-                elif fan_raw == 6: self.fan_mode = "turbo"
 
-            # 🌟 [스마트 필터 2] 방금 파싱된 값들로 새로운 스냅샷 생성
             new_state = (
                 self.is_on, self.hvac_mode, self.fan_mode, self.target_temp,
                 round(self.current_temp, 1), round(self.pipe_in, 1), round(self.pipe_out, 1),
@@ -170,8 +184,6 @@ class LGDeviceState:
                 self.timer_remaining
             )
 
-            # 🌟 [스마트 필터 3] 통신이 뻗었다 돌아왔거나, 튜플 값 중 단 하나라도 변했을 때만 HA 갱신!
-            # (raw_packet은 스냅샷에 없으므로, 체크섬만 바뀐 패킷은 여기서 컷오프 됩니다.)
             if not prev_online or old_state != new_state:
                 for listener in self._listeners: listener()
                 
@@ -243,7 +255,9 @@ async def ew11_poll_task(hass, entry, interval):
                             for listener in dev._listeners: listener()
 
                 try:
-                    writer.write(make_poll_packet(real_id))
+                    # 🌟 폴링 패킷도 클래스 내부의 make_tx_packet을 통해 일관된 헤더 규격을 타도록 변경
+                    poll_packet = dev.make_tx_packet(is_poll=True)
+                    writer.write(poll_packet)
                     await writer.drain()
                     await asyncio.sleep(0.2)
                 except: pass
