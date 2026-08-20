@@ -18,7 +18,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities.append(LGACSensor(device, "odu_total_load", "실외기 총 열부하", None, "mdi:speedometer"))
         entities.append(LGACSensor(device, "timer_remaining", "남은 수면 타이머", "min", "mdi:timer-sand"))
         
-        # 🌟 수신 패킷 센서 생성 (아래 클래스에서 비활성화 속성 부여됨)
+        # 🌟 [추가됨] 필요시 활성화해서 쓸 수 있는 개별 센서들
+        entities.append(LGACSensor(device, "current_temp", "현재 온도", UnitOfTemperature.CELSIUS, "mdi:thermometer"))
+        entities.append(LGACSensor(device, "hvac_mode", "운전 모드", None, "mdi:air-conditioner"))
+        entities.append(LGACSensor(device, "fan_mode", "풍량 상태", None, "mdi:fan"))
         entities.append(LGACSensor(device, "raw_packet", "수신 패킷", None, "mdi:network-packet"))
         
     async_add_entities(entities)
@@ -35,8 +38,8 @@ class LGACSensor(SensorEntity):
         self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
 
-        # 🌟 [핵심] raw_packet 센서는 진단용으로 숨김 처리
-        if sensor_type == "raw_packet":
+        # 🌟 [핵심] 지정된 센서들은 진단용으로 분류하고 기본 활성화 상태를 False로 둡니다.
+        if sensor_type in ["raw_packet", "current_temp", "hvac_mode", "fan_mode"]:
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
             self._attr_entity_registry_enabled_default = False
 
@@ -53,5 +56,11 @@ class LGACSensor(SensorEntity):
         if self.sensor_type == "zone_design_load_index": return self.device.zone_design_load
         if self.sensor_type == "odu_total_load": return self.device.odu_total_load
         if self.sensor_type == "timer_remaining": return self.device.timer_remaining
+        
+        # 🌟 [추가됨] 새로 추가된 센서들의 상태값 반환 (문자열 변환)
         if self.sensor_type == "raw_packet": return self.device.raw_packet
+        if self.sensor_type == "current_temp": return round(self.device.current_temp, 1)
+        if self.sensor_type == "hvac_mode": return str(self.device.hvac_mode)
+        if self.sensor_type == "fan_mode": return str(self.device.fan_mode)
+        
         return None

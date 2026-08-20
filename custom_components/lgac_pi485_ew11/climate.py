@@ -25,7 +25,15 @@ class LGAirConditionerClimate(ClimateEntity):
         self._attr_device_info = {"identifiers": {(DOMAIN, f"lgac_device_{device.real_id}")}, "name": device.name, "manufacturer": "LG"}
         self._attr_temperature_unit = UnitOfTemperature.CELSIUS
         self._attr_target_temperature_step = 1.0 
-        self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE | ClimateEntityFeature.SWING_MODE
+        
+        # 🌟 [버그 수정] 명시적 TURN_ON, TURN_OFF 기능 추가
+        self._attr_supported_features = (
+            ClimateEntityFeature.TARGET_TEMPERATURE | 
+            ClimateEntityFeature.FAN_MODE | 
+            ClimateEntityFeature.SWING_MODE |
+            ClimateEntityFeature.TURN_ON | 
+            ClimateEntityFeature.TURN_OFF
+        )
         
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.DRY, HVACMode.FAN_ONLY, HVACMode.AUTO]
         if device.has_heat: self._attr_hvac_modes.append(HVACMode.HEAT)
@@ -71,9 +79,20 @@ class LGAirConditionerClimate(ClimateEntity):
     @property
     def swing_mode(self): return SWING_VERTICAL if self.device.swing_state else SWING_OFF
 
+    # 🌟 [버그 수정] 자동화에서 호출하는 climate.turn_on 서비스 대응
+    async def async_turn_on(self):
+        """Turn the entity on."""
+        # 에어컨이 꺼져있을 때 켜면, 이전에 쓰던 모드를 기억해서 켜거나 기본값(냉방)으로 켭니다.
+        target_mode = self.device.hvac_mode if self.device.hvac_mode != HVACMode.OFF else HVACMode.COOL
+        await self.async_set_hvac_mode(target_mode)
+
+    # 🌟 [버그 수정] 자동화에서 호출하는 climate.turn_off 서비스 대응
+    async def async_turn_off(self):
+        """Turn the entity off."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
+
     async def async_set_hvac_mode(self, hvac_mode): 
         if not self.device.lock_mode and not self.device.power_only:
-            # 🌟 낙관적 업데이트(self.device.hvac_mode = hvac_mode) 삭제. 무조건 패킷 응답 대기.
             await self._fire_tx(override_hvac=hvac_mode)
         elif self.device.power_only and hvac_mode in [HVACMode.OFF, HVACMode.COOL]: 
             await self._fire_tx(override_hvac=hvac_mode)
@@ -81,18 +100,15 @@ class LGAirConditionerClimate(ClimateEntity):
     async def async_set_temperature(self, **kwargs):
         if "temperature" in kwargs and not self.device.lock_temp and not self.device.power_only: 
             temp_val = round(kwargs["temperature"])
-            # 🌟 UI 선반영 로직 삭제. 
             await self._fire_tx(override_temp=temp_val)
 
     async def async_set_fan_mode(self, fan_mode): 
         if not self.device.lock_fan and not self.device.power_only:
-            # 🌟 UI 선반영 로직 삭제.
             await self._fire_tx(override_fan=fan_mode)
 
     async def async_set_swing_mode(self, swing_mode): 
         if not self.device.power_only:
             is_swing = (swing_mode == SWING_VERTICAL)
-            # 🌟 UI 선반영 로직 삭제.
             await self._fire_tx(override_swing=is_swing)
 
     async def _fire_tx(self, **kwargs):
