@@ -7,7 +7,7 @@
         "data": {
           "host": "IP 주소",
           "port": "포트 번호",
-          "temp_step": "온도 조절 단위",
+          "header_type": "명령어 헤더 방식",
           "update_interval": "상태 업데이트 주기",
           "scan_duration": "스캔 대기 시간"
         }

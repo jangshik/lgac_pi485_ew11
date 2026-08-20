@@ -14,7 +14,7 @@ PLATFORMS = ["climate", "sensor", "switch", "number"]
 # True  = 기존 방식 (80 00 A3) - Silent, Turbo 등 특수명령 지원
 # False = 신규 표준 (00 00 A0) - 일반적인 기본 LGAP 규격
 # ==============================================================
-USE_LEGACY_HEADER = True
+
 
 class LGDeviceState:
     def __init__(self, entity_idx, real_id, name, temp_step, has_heat, has_plasma, system_type):
@@ -25,6 +25,7 @@ class LGDeviceState:
         self.has_heat = has_heat
         self.has_plasma = has_plasma
         self.system_type = system_type 
+        self.header_type = header_type  # 👈 이 줄 추가
         
         self.is_online = False
         self.last_rx_time = 0
@@ -107,8 +108,8 @@ class LGDeviceState:
         tx6 = int(round(temp)) - 15
         tx6 = max(1, min(15, tx6))
 
-        # 🌟 [롤백 스위치 적용] USE_LEGACY_HEADER 값에 따라 헤더가 0x80 00 A3 또는 00 00 A0로 전송됩니다.
-        if USE_LEGACY_HEADER:
+        # 👈 2. 기존 USE_LEGACY_HEADER 부분을 아래 코드로 교체
+        if self.header_type == "legacy":
             base_packet = bytearray([0x80, 0x00, 0xA3, self.real_id, tx4, tx5, tx6])
         else:
             base_packet = bytearray([0x00, 0x00, 0xA0, self.real_id, tx4, tx5, tx6])
@@ -196,6 +197,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     mapping_str = entry.data["mapping"]
     temp_step = entry.data.get("temp_step", 1.0)
     update_interval = entry.data.get("update_interval", 10)
+    header_type = entry.data.get("header_type", "legacy") # 👈 이 줄 추가
 
     devices = {}
     for item in mapping_str.split(","):
@@ -209,8 +211,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             has_heat = parts[2].strip() == "1" if len(parts) > 2 else True
             has_plasma = parts[3].strip() == "1" if len(parts) > 3 else False
             sys_type = parts[4].strip() if len(parts) > 4 else "M"
+
+            devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat, has_plasma, sys_type, header_type)
             
-            devices[real_id] = LGDeviceState(entity_val, real_id, name, temp_step, has_heat, has_plasma, sys_type)
         except Exception as e: continue
 
     hass.data[DOMAIN][entry.entry_id] = {"devices": devices, "writer": None}
