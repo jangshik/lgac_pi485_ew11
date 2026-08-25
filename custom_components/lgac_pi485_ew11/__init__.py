@@ -111,7 +111,7 @@ class LGDeviceState:
         return bytes(base_packet)
 """
 
-def make_tx_packet(self, override_hvac=None, override_temp=None, override_fan=None, override_lock=None, override_plasma=None, override_swing=None, is_poll=False) -> bytes:
+    def make_tx_packet(self, override_hvac=None, override_temp=None, override_fan=None, override_lock=None, override_plasma=None, override_swing=None, is_poll=False) -> bytes:
         
         # 🌟 [치명적 버그 수정] 상태를 읽을 때(Polling)는 내부 상태를 00 00 00 으로 완전히 비워야 합니다.
         # 기존처럼 값을 채워 보내면 리모컨으로 조작한 실제 상태를 HA가 강제로 덮어씌워 버립니다.
