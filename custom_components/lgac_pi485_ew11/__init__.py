@@ -18,7 +18,7 @@ class LGDeviceState:
         self.has_heat = has_heat
         self.has_plasma = has_plasma
         self.system_type = system_type 
-        self.header_type = header_type  # 🌟 헤더 타입 설정 
+        self.header_type = header_type 
         
         self.is_online = False
         self.last_rx_time = 0
@@ -64,57 +64,8 @@ class LGDeviceState:
             self.timer_end_time = None
             self.timer_remaining = 0
         for listener in self._listeners: listener()
-"""
-    def make_tx_packet(self, override_hvac=None, override_temp=None, override_fan=None, override_lock=None, override_plasma=None, override_swing=None, is_poll=False) -> bytes:
-        hvac = override_hvac if override_hvac is not None else self.hvac_mode
-        temp = override_temp if override_temp is not None else self.target_temp
-        fan = override_fan if override_fan is not None else self.fan_mode
-        lock = override_lock if override_lock is not None else self.child_lock
-        plasma = override_plasma if override_plasma is not None else self.plasma_ion
-        swing = override_swing if override_swing is not None else self.swing_state
-
-        if is_poll:
-            tx4 = 0x00
-        else:
-            tx4 = 0x02
-            if hvac != HVACMode.OFF: tx4 |= 0x01
-            if lock: tx4 |= 0x04
-            if plasma: tx4 |= 0x10
-
-        mode_hex = 0
-        if hvac == HVACMode.DRY: mode_hex = 1
-        elif hvac == HVACMode.FAN_ONLY: mode_hex = 2
-        elif hvac == HVACMode.HEAT: mode_hex = 4
-        elif hvac == HVACMode.AUTO: mode_hex = 3 
-
-        fan_hex = 2
-        if fan == FAN_LOW: fan_hex = 1
-        elif fan == FAN_HIGH: fan_hex = 3
-        elif fan == "auto": fan_hex = 4
-        elif fan == "silent": fan_hex = 5
-        elif fan == "turbo": fan_hex = 6
-
-        tx5 = (mode_hex & 0x07) | ((fan_hex & 0x07) << 4)
-        if swing: tx5 |= 0x08 
-
-        tx6 = int(round(temp)) - 15
-        tx6 = max(1, min(15, tx6))
-
-        # 🌟 [하이브리드 로직 핵심]
-        # 레거시 모드이면서, 폴링(읽기)이 아닐 때(즉, 명령을 내릴 때)만 80 00 A3 발동!
-        if self.header_type == "legacy" and not is_poll:
-            base_packet = bytearray([0x80, 0x00, 0xA3, self.real_id, tx4, tx5, tx6])
-        else:
-            base_packet = bytearray([0x00, 0x00, 0xA0, self.real_id, tx4, tx5, tx6])
-            
-        base_packet.append(calculate_checksum(base_packet))
-        return bytes(base_packet)
-"""
 
     def make_tx_packet(self, override_hvac=None, override_temp=None, override_fan=None, override_lock=None, override_plasma=None, override_swing=None, is_poll=False) -> bytes:
-        
-        # 🌟 [치명적 버그 수정] 상태를 읽을 때(Polling)는 내부 상태를 00 00 00 으로 완전히 비워야 합니다.
-        # 기존처럼 값을 채워 보내면 리모컨으로 조작한 실제 상태를 HA가 강제로 덮어씌워 버립니다.
         if is_poll:
             if self.header_type == "legacy":
                 base_packet = bytearray([0x80, 0x00, 0xA3, self.real_id, 0x00, 0x00, 0x00])
@@ -123,7 +74,6 @@ class LGDeviceState:
             base_packet.append(calculate_checksum(base_packet))
             return bytes(base_packet)
 
-        # 🌟 이하 코드는 HA 화면에서 버튼을 눌러 제어(Write)할 때만 실행됩니다.
         hvac = override_hvac if override_hvac is not None else self.hvac_mode
         temp = override_temp if override_temp is not None else self.target_temp
         fan = override_fan if override_fan is not None else self.fan_mode
@@ -162,7 +112,6 @@ class LGDeviceState:
             
         base_packet.append(calculate_checksum(base_packet))
         return bytes(base_packet)
-
 
     def update_from_packet(self, packet: bytes):
         if len(packet) < 16: return
@@ -320,7 +269,6 @@ async def ew11_socket_task(hass, entry, host, port):
                 if not data: break
                 buffer.extend(data)
                 
-                # 🌟 0x10 검열 완전히 삭제된 수신부!
                 while len(buffer) >= 8:
                     matched = False
                     
